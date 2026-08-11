@@ -15,19 +15,12 @@
 // KROK 1 (ten plik): tylko wejsc do procesu, przekazac wywolania dalej i zostawic
 // slad w logu. Zadnego dotykania silnika. Dopiero gdy to jest pewne, ma sens
 // szukanie GEngine i wolanie travelu.
-//
-// UWAGA LICENCYJNA. W tym pliku wystepuja krotkie tablice bajtow kodu
-// maszynowego POCHODZACE Z GRY (prologi latanych funkcji: raz do sprawdzenia,
-// ze latamy to, co trzeba, raz przeniesione do trampoliny, zeby wykonac je
-// zamiast nadpisanych instrukcji). To cytat z cudzego programu, niezbedny
-// technicznie do zalozenia latki, a NIE kod tego projektu: licencja MIT
-// obejmuje kod napisany tutaj i nie rozciaga sie na te bajty ani na zaden inny
-// element gry. Prawa do nich naleza do jej autorow.
 
 #include <windows.h>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 // Nazwa biblioteki, ktora udajemy. Ustawiana przez -DWFCOOP_AS_VERSION przy
 // budowaniu wariantu version.dll.
@@ -256,6 +249,7 @@ static SetClientTravelFn g_setClientTravel = nullptr;
 static void wfcoopWyjmijBron(uintptr_t base);
 static void kanalTick(uintptr_t base);
 static void tikNapelniania(uintptr_t base);
+static void tikWarunkuRuchu(uintptr_t base);
 static uintptr_t g_bazaModulu = 0;
 
 // Wolane z trampoliny, czyli juz na watku gry.
@@ -273,6 +267,10 @@ extern "C" void wfcoopOnGameThread()
 
     // Powtorka napelniania magazynka — takze z watku gry, bo wola kod gry.
     if (g_bazaModulu) tikNapelniania(g_bazaModulu);
+
+    // Podtrzymanie warunku ruchu pionka zdalnego — co klatke, bo maszyna
+    // kasuje go w swoim tiku (zmierzone 21:17: kazdy zapis widzi przed=0).
+    if (g_bazaModulu) tikWarunkuRuchu(g_bazaModulu);
 
     if (!g_travelArmed) return;
     if (InterlockedExchange(&g_travelDone, 1)) return;   // tylko raz
@@ -578,9 +576,6 @@ static bool patchGameEngineTick(uintptr_t base)
 {
     auto* fn = reinterpret_cast<unsigned char*>(base + addr::GameEngineTick_OFF);
 
-    // Bajty ponizej to prolog funkcji GRY — cytat z jej kodu, niezbedny, zeby
-    // sprawdzic, ze latamy wlasciwe miejsce. Nie sa objete licencja MIT tego
-    // projektu (patrz uwaga licencyjna na poczatku pliku).
     static const unsigned char oczekiwane[] = {
         0x48, 0x8B, 0xC4,              // mov  rax,rsp
         0x44, 0x88, 0x40, 0x18,        // mov  [rax+0x18],r8b
@@ -604,9 +599,6 @@ static bool patchGameEngineTick(uintptr_t base)
     // Wyrownanie stosu: na wejsciu rsp%16==8. Siedem odlozen (56 B) daje rsp%16==0,
     // `sub rsp,0x60` na rejestry xmm tego nie zmienia, `sub rsp,0x20` (cien) tez —
     // czyli tuz przed `call` mamy rsp%16==0, zgodnie z ABI.
-    //
-    // Wiersze oznaczone „oryginal" to bajty przeniesione Z GRY — cytat niezbedny
-    // do zalatania (patrz uwaga licencyjna na poczatku pliku).
     unsigned char code[] = {
         0x50, 0x51, 0x52,                          // push rax, rcx, rdx
         0x41,0x50, 0x41,0x51, 0x41,0x52, 0x41,0x53,// push r8, r9, r10, r11
@@ -807,9 +799,6 @@ constexpr uintptr_t BoosterEpilog_OFF    = 0x19CA8FD;   // add rsp,0x30; ...; re
 static bool patchBoosterNullGuard(uintptr_t base)
 {
     auto* fn = reinterpret_cast<unsigned char*>(base + addr::BoosterNullCheck_OFF);
-    // Bajty ponizej to prolog funkcji GRY — cytat z jej kodu, niezbedny, zeby
-    // sprawdzic, ze latamy wlasciwe miejsce. Nie sa objete licencja MIT tego
-    // projektu (patrz uwaga licencyjna na poczatku pliku).
     static const unsigned char oczekiwane[] = {
         0x48, 0x8D, 0x54, 0x24, 0x20,   // lea rdx,[rsp+0x20]
         0x48, 0x8B, 0xC8,               // mov rcx,rax
@@ -848,10 +837,6 @@ static bool patchBoosterNullGuard(uintptr_t base)
     //   +0x24 jmp [rip+0]  -> +0x2A  adres epilogu
     //   +0x2A <adres epilogu, 8 B>
     //   +0x32 <licznik, 4 B>
-    //
-    // Wiersze oznaczone „oryginal" to bajty przeniesione Z GRY: instrukcje,
-    // ktore nadpisuje skok, musimy wykonac w trampolinie. Cytat niezbedny do
-    // zalatania, nieobjety licencja MIT tego projektu.
     enum { OFF_POWROT = 0x16, OFF_EPILOG = 0x2A, OFF_LICZNIK = 0x32 };
     unsigned char code[] = {
         0x48, 0x85, 0xC0,                    // test rax,rax
@@ -937,9 +922,6 @@ constexpr uintptr_t BindInputAction_OFF = 0x1A1A0C0;
 static bool patchInputBindNullGuard(uintptr_t base)
 {
     auto* fn = reinterpret_cast<unsigned char*>(base + addr::BindInputAction_OFF);
-    // Bajty ponizej to prolog funkcji GRY — cytat z jej kodu, niezbedny, zeby
-    // sprawdzic, ze latamy wlasciwe miejsce. Nie sa objete licencja MIT tego
-    // projektu (patrz uwaga licencyjna na poczatku pliku).
     static const unsigned char oczekiwane[] = {
         0x41, 0x54,                    // push r12
         0x41, 0x57,                    // push r15
@@ -971,9 +953,6 @@ static bool patchInputBindNullGuard(uintptr_t base)
     //   +0x1B inc [rip+X] -> licznik
     //   +0x21 ret
     //   +0x22 <licznik, 4 B>
-    //
-    // Wiersze oznaczone „oryginal" to bajty przeniesione Z GRY (patrz uwaga
-    // licencyjna na poczatku pliku).
     enum { OFF_POWROT = 0x13, OFF_LICZNIK = 0x22 };
     unsigned char code[] = {
         0x48, 0x85, 0xC9,                    // test rcx,rcx
@@ -1060,9 +1039,6 @@ static volatile unsigned* g_efektyLicznik = nullptr;
 static bool patchEffectsPawnNullGuard(uintptr_t base)
 {
     auto* fn = reinterpret_cast<unsigned char*>(base + addr::EffectsPawnLoad_OFF);
-    // Bajty ponizej pochodza Z GRY — cytat z jej kodu, niezbedny, zeby sprawdzic,
-    // ze latamy wlasciwe miejsce. Nie sa objete licencja MIT tego projektu
-    // (patrz uwaga licencyjna na poczatku pliku).
     static const unsigned char oczekiwane[] = {
         0x48, 0x8B, 0x8E, 0x98, 0x09, 0x00, 0x00,   // mov  rcx,[rsi+0x998]
         0x48, 0x8B, 0x01,                           // mov  rax,[rcx]
@@ -1093,10 +1069,6 @@ static bool patchEffectsPawnNullGuard(uintptr_t base)
     //   +0x29 jmp  [rip+0] -> +0x2F  adres pominiecia
     //   +0x2F <adres pominiecia, 8 B>
     //   +0x37 <licznik, 4 B>
-    //
-    // Instrukcje odtworzone w trampolinie (`mov rcx,[rsi+0x998]`, `mov rax,[rcx]`,
-    // `call [rax+0x9C0]`) to bajty przeniesione Z GRY — cytat niezbedny do
-    // zalatania (patrz uwaga licencyjna na poczatku pliku).
     enum { OFF_POWROT = 0x1B, OFF_POMIN = 0x2F, OFF_LICZNIK = 0x37 };
     unsigned char code[] = {
         0x48, 0x8B, 0x8E, 0x98, 0x09, 0x00, 0x00,   // mov  rcx,[rsi+0x998]
@@ -1932,10 +1904,47 @@ static bool znajdzTagRuchu(uintptr_t base, uintptr_t sm)
     return false;
 }
 
+// Odczyt licznika warunku wprost z tablicy `CustomConditions` maszyny.
+// Uklad zmierzony na zywej grze: `+0x110` TArray, element 16 B, znacznik
+// (FName) pod +0x00, licznik (int32) pod +0x08. Bez tego odczytu nie da sie
+// odroznic „nasz zapis nie dochodzi" od „zapis dochodzi, ale nie wystarcza",
+// a to sa dwie zupelnie rozne naprawy.
+namespace addr {
+constexpr uintptr_t SM_CUSTOM_CONDITIONS = 0x110;
+constexpr int       WARUNEK_WPIS_ROZMIAR = 16;
+}
+
+static int licznikWarunku(uintptr_t sm, uint64_t tag)
+{
+    const uintptr_t d = *(const uintptr_t*)(sm + addr::SM_CUSTOM_CONDITIONS);
+    const int32_t n = *(const int32_t*)(sm + addr::SM_CUSTOM_CONDITIONS + 8);
+    if (!sensownyWsk(d) || n <= 0 || n > 64) return -1;
+    for (int i = 0; i < n; ++i) {
+        const uintptr_t e = d + (uintptr_t)i * addr::WARUNEK_WPIS_ROZMIAR;
+        if (*(const uint64_t*)e == tag) return *(const int32_t*)(e + 8);
+    }
+    return -1;
+}
+
+// Maszyny pionkow zdalnych, dla ktorych klient melduje ruch. Warunek trzeba
+// PODTRZYMYWAC co klatke: log 21:17 pokazal, ze kazdy nasz zapis widzi
+// `przed=0`, mimo ze sekunde wczesniej wpisalismy jedynke — czyli tik maszyny
+// przelicza ten warunek z komponentu wejscia (ktorego dla pionka zdalnego nie
+// ma) i kasuje nasza wartosc, zanim kolejka przejsc zostanie oceniona.
+struct RuchZdalny { uintptr_t sm; bool ma; };
+static RuchZdalny g_ruchZdalny[8] = {};
+
+static void zapamietajRuch(uintptr_t sm, bool ma)
+{
+    for (auto& r : g_ruchZdalny) if (r.sm == sm) { r.ma = ma; return; }
+    for (auto& r : g_ruchZdalny) if (!r.sm) { r.sm = sm; r.ma = ma; return; }
+}
+
 static void ustawWarunekRuchu(uintptr_t base, uintptr_t sm, bool ma)
 {
     if (!g_ufUpdateWarunku || !znajdzTagRuchu(base, sm)) return;
     if (!gniazdoSensowne((void*)sm, addr::SLOT_PROCESS_EVENT, "ProcessEvent")) return;
+    const int przedW = licznikWarunku(sm, g_tagRuchu);
 #pragma pack(push, 1)
     struct { uint64_t tag; unsigned char wartosc; } par;
 #pragma pack(pop)
@@ -1944,7 +1953,11 @@ static void ustawWarunekRuchu(uintptr_t base, uintptr_t sm, bool ma)
     auto** vt = *(void***)sm;
     using PEFn = void(__fastcall*)(void*, void*, void*);
     ((PEFn)vt[addr::SLOT_PROCESS_EVENT])((void*)sm, (void*)g_ufUpdateWarunku, &par);
-    InterlockedIncrement(&g_warunkowUstawionych);
+    const int poW = licznikWarunku(sm, g_tagRuchu);
+    if (InterlockedIncrement(&g_warunkowUstawionych) <= 12)
+        logLine("KANAL: warunek ruchu := %d   licznik przed=%d po=%d %s",
+                (int)ma, przedW, poW,
+                przedW == poW ? "— ZAPIS NIC NIE ZMIENIL" : "");
 }
 
 // Magazynek trzymanej broni pionka zdalnego. Maszyna stanow siedzi w postaci
@@ -1953,6 +1966,10 @@ static void ustawWarunekRuchu(uintptr_t base, uintptr_t sm, bool ma)
 using TrzymanaBronFn = void*(__fastcall*)(void*);
 namespace addr {
 constexpr uintptr_t NapelnijMagazynek_OFF = 0x1B242F0;   // void(DimensionWeapon*)
+// Dwa skladniki, ktorych minimum trafia do magazynka. Obie biora bron w `rcx`
+// i oddaja float; druga dodatkowo bajt w `dl`.
+constexpr uintptr_t LiczA_OFF = 0x1B25D10;
+constexpr uintptr_t LiczB_OFF = 0x1B25AA0;
 }
 // `TrzymanaBron_OFF` jest juz zdefiniowane nizej, przy latce predkosci —
 // tam ma swoje uzasadnienie pomiarowe, wiec nie dublujemy go tutaj.
@@ -1978,6 +1995,17 @@ void naprawMagazynekPostaci(uintptr_t base, uintptr_t postac)
     void* bron = ((TrzymanaBronFn)fb)((void*)postac);
     if (!bron || !sensownyWsk((uintptr_t)bron)) return;
 
+    // UWAGA — TU BYL POMIAR, KTORY WYWALIL GRE (21:04:28, 11.08).
+    // Wolalem `0x141B25D10` i `0x141B25AA0` bezposrednio, biorac ich sygnatury
+    // z samego poczatku deasemblacji (rcx = bron, dl = bajt). Skutek:
+    // EXCEPTION_ACCESS_VIOLATION pod 0x13FFFFFFB, czyli piec bajtow ponizej bazy
+    // modulu — objaw wywolania z niewlasciwa liczba argumentow. Wynik, ktory
+    // zdazyl sie zalogowac (A=0.0), jest przez to BEZWARTOSCIOWY: rownie dobrze
+    // moze byc smieciem z popsutej ramki.
+    //
+    // Jak zrobic to poprawnie: nie wolac tych funkcji samemu, tylko zalozyc na
+    // nie hak (trampoline) i logowac wynik, gdy wola je SAMA GRA. Wtedy
+    // argumenty sklada gra, a my tylko podgladamy `xmm0` przy powrocie.
     int* proby = nullptr;
     for (int i = 0; i < 8; ++i) {
         if (g_naprawioneBronie[i] == (uintptr_t)bron) { proby = &g_naprawProby[i]; break; }
@@ -2145,6 +2173,7 @@ static void ustawStanNaSerwerze(uintptr_t base, uintptr_t sm, int indeksStanu)
     // gracz TRZYMA wejscie ruchu. Bez tego warunek `HasMovementInput` jest
     // falszem i przejscie `IdleToWalking` nie ma prawa zajsc — a bez `Walking`
     // nie ma drogi do `Running`.
+    zapamietajRuch(sm, indeksStanu != 0);
     ustawWarunekRuchu(base, sm, indeksStanu != 0);
 
     // KROK 3 — doprowadzenie maszyny do stanu, w ktorym jest klient.
@@ -2334,6 +2363,17 @@ static bool patchKanalStanu(uintptr_t base)
 // `Role == 2` (AutonomousProxy) znaczy „jestem klientem w sesji" — u hosta
 // jego wlasna postac ma `Role == 3` i ta funkcja nic nie robi. To jej wlasna
 // proba kontrolna: licznik wyslanych ma u hosta zostac na zerze.
+static void tikWarunkuRuchu(uintptr_t base)
+{
+    if (!g_fixStateWlaczony || !g_ufUpdateWarunku || !g_tagRuchu) return;
+    for (auto& r : g_ruchZdalny) {
+        if (!r.sm || !r.ma) continue;
+        if (!sensownyWsk(r.sm)) { r.sm = 0; continue; }
+        if (licznikWarunku(r.sm, g_tagRuchu) > 0) continue;   // juz jest — nie ruszamy
+        ustawWarunekRuchu(base, r.sm, true);
+    }
+}
+
 static void kanalTick(uintptr_t base)
 {
     if (!g_fixStateWlaczony || !g_ufuncKanal || !g_jestemKlientem) return;
@@ -2970,6 +3010,160 @@ static void odswiezAtrybuty(void* comp, const char* ktora, float przed)
             (unsigned long long)(uintptr_t)comp, ktora, przed, po);
 }
 
+// ── ZNACZNIK CZASU WEJSCIA RUCHU (marker `WFCoop_fix_czas.txt`) ─────────────
+//
+// Dlaczego to, a nie nadpisywanie warunku: nadpisywanie jest OBALONE (11.08,
+// 1822 zapisy co klatke i kazdy widzi `przed=0`). Powod obalenia jest teraz
+// jasny — warunek `HasMovementInput` NIE JEST przechowywany. Gra przelicza go
+// co klatke w `0x141809CC0` z JEDNEGO pola pionka:
+//
+//   0x141809D84  mov    rcx, [maszyna + 0x488]   ; pionek
+//   0x141809D8B  call   0x141871230              ; xmm0 = [pionek + 0xC74]
+//   0x141809D93  comiss xmm0, 0  /  jbe -> falsz ; znacznik musi byc DODATNI
+//   0x141809DB3  movss  xmm6, [swiat + 0x5A0]    ; zegar swiata
+//   0x141809DC0  subss  xmm6, xmm0               ; wiek znacznika
+//   0x141809DC9  comiss xmm6, [maszyna + 0x494]  ; wiek <= prog  =>  PRAWDA
+//
+// Czyli `HasMovementInput = (znacznik > 0) && (teraz - znacznik <= prog)`.
+//
+// Kto ten znacznik zapisuje: dwie funkcje (`0x14187E285`, `0x14187E60C`), obie
+// dokladnie tym samym ciagiem instrukcji:
+//
+//   call [vt + 0x738]        ; AddMovementInput — LOKALNA obsluga wejscia
+//   call [vt + 0x160]        ; GetWorld
+//   mov  ecx, [swiat+0x5A0]  ; TimeSeconds
+//   mov  [pionek+0xC74], ecx
+//
+// Serwer nie wykonuje lokalnej obslugi wejscia dla pionka zdalnego, wiec pole
+// zostaje na `-1.0f` wpisanym w konstruktorze postaci (`0x141853CA3`, obok
+// literalu `InventoryComponent`) i przegrywa juz na pierwszym warunku. Dlatego
+// maszyna serwera nigdy nie wychodzi z `Idle`, a bez `Walking` nie ma drogi
+// do `Running` — stad sufit 522,8 zamiast 800 i cofanie przy sprincie.
+//
+// Nie podrabiamy mechaniki. Robimy ten sam zapis, co gra: jej wlasny zegar
+// swiata do jej wlasnego pola. Warunek liczy sobie gra sama — dostarczamy
+// tylko daną wejsciowa, ktorej serwer nie ma skad wziac. To ten sam wyjatek
+// co kanal stanu: gra nie ma ZADNEJ serwerowej sciezki, ktora by to ustawila.
+//
+// Wyzwalacz jest ZMIERZONY, nie oczywisty (zasada 2): bierzemy `Acceleration`
+// komponentu ruchu, bo to gra rozpakowuje ja z RPC klienta — zmierzone
+// wartosci 2000 i 4000 dla pionka zdalnego (WIEDZA §„RPC dochodzi"). Kanal
+// stanu do tego NIE nadaje sie: wysyla tylko przy zmianie sprintu albo
+// kucania, wiec zwykly chod nie wyzwolilby go ani razu.
+namespace addr {
+constexpr uintptr_t COMP_PRZYSPIESZENIE = 0x22C;  // FVector; 0x1436DB8EA je zeruje
+constexpr uintptr_t KOMP_SWIAT          = 0xA8;   // UActorComponent::WorldPrivate
+constexpr uintptr_t SWIAT_CZAS          = 0x5A0;  // UWorld::TimeSeconds
+constexpr uintptr_t PIONEK_ZNACZNIK     = 0xC74;  // czas ostatniego wejscia ruchu
+constexpr uintptr_t SM_PROG_RUCHU       = 0x494;  // dopuszczalny wiek znacznika
+}
+
+static bool          g_fixCzasWlaczony = false;
+static volatile LONG g_znacznikowUstawionych = 0;
+
+// Ocena „czy dla tego komponentu wolno pisac znacznik" jest DROGA (rozwiazanie
+// nazwy klasy), a hak idzie co klatke — wiec liczymy ja raz na komponent.
+// Zasada 7: kod w petli klatki ma byc tani.
+//
+// Zapamietujemy WYLACZNIE ocene rozstrzygnieta. Pionek w pierwszych klatkach po
+// zrodzeniu nie ma jeszcze kontrolera, wiec „nie umiem powiedziec" wyglada
+// wtedy identycznie jak „to pionek hosta" — zapisanie tego na stale wylaczyloby
+// latke na cala sesje, a w logu wygladaloby jak nieudany wyzwalacz.
+enum class Ocena { NieWiem, Wolno, NieWolno };
+struct OcenaKomp { void* comp; Ocena ocena; };
+static OcenaKomp g_ocenaKomp[8] = {};
+static int       g_ocenaNast = 0;
+
+static Ocena ocenPionka(uintptr_t base, uintptr_t postac)
+{
+    // 1. Czyj to pionek. Rozstrzyga klasa obiektu `Player` kontrolera: host ma
+    //    pod nim `DimensionLocalPlayer`, dolaczony gracz nie. Dopoki kontrolera
+    //    albo gracza nie ma, NIE ZGADUJEMY.
+    const uintptr_t pc = *(const uintptr_t*)(postac + addr::CHAR_CONTROLLER);
+    if (!sensownyWsk(pc)) return Ocena::NieWiem;
+    const uintptr_t gracz = *(const uintptr_t*)(pc + addr::PC_PLAYER);
+    if (!sensownyWsk(gracz)) return Ocena::NieWiem;
+    const uintptr_t klasaGracza = *(const uintptr_t*)(gracz + UOBJ_CLASS_OFF);
+    char n[128];
+    if (!sensownyWsk(klasaGracza) || !nazwaObiektu(base, klasaGracza, n, sizeof n))
+        return Ocena::NieWiem;
+    // Wlasny pionek hosta stempluje sobie sam, jego wlasna obsluga wejscia.
+    if (strcmp(n, "DimensionLocalPlayer") == 0) return Ocena::NieWolno;
+
+    // 2. Klasa musi byc postacia gracza. `+0xC74` to gleboki offset; zapis pod
+    //    nim w obiekcie innej klasy to cicha rujnacja pamieci.
+    const uintptr_t klasa = *(const uintptr_t*)(postac + UOBJ_CLASS_OFF);
+    if (!sensownyWsk(klasa)) return Ocena::NieWiem;
+    if (!dziedziczyPo(base, klasa, "DimensionPlayerCharacter")) return Ocena::NieWolno;
+
+    // 3. Proba kontrolna na samej wartosci: pole ma byc albo `-1.0f`
+    //    z konstruktora, albo sensownym czasem. Cokolwiek innego znaczy, ze
+    //    offset albo klasa sa nie te — wtedy NIE piszemy i mowimy to w logu,
+    //    zamiast po cichu psuc pamiec.
+    const float teraz = *(const float*)(postac + addr::PIONEK_ZNACZNIK);
+    if (teraz == -1.0f || (teraz >= 0.0f && teraz < 1.0e7f)) return Ocena::Wolno;
+    logLine("CZAS: pole +0x%llX pionka 0x%llX ma %.3f — to nie wyglada na znacznik "
+            "czasu; NIE pisze", (unsigned long long)addr::PIONEK_ZNACZNIK,
+            (unsigned long long)postac, teraz);
+    return Ocena::NieWolno;
+}
+
+static bool wolnoPisacZnacznik(uintptr_t base, void* comp, uintptr_t postac)
+{
+    for (auto& o : g_ocenaKomp)
+        if (o.comp == comp) return o.ocena == Ocena::Wolno;
+
+    const Ocena ocena = ocenPionka(base, postac);
+    if (ocena == Ocena::NieWiem) return false;      // sprobujemy w nastepnej klatce
+
+    // Pionek po respawnie dostaje nowy komponent, wiec tablica sie zapelnia.
+    // Nadpisujemy po kolei zamiast przestac pamietac — inaczej po osmej postaci
+    // ocena liczylaby sie od nowa w KAZDEJ klatce.
+    for (auto& o : g_ocenaKomp)
+        if (!o.comp) { o.comp = comp; o.ocena = ocena; return ocena == Ocena::Wolno; }
+    g_ocenaKomp[g_ocenaNast].comp = comp;
+    g_ocenaKomp[g_ocenaNast].ocena = ocena;
+    g_ocenaNast = (g_ocenaNast + 1) % 8;
+    return ocena == Ocena::Wolno;
+}
+
+static void odswiezZnacznikRuchu(void* comp)
+{
+    if (!g_fixCzasWlaczony || !g_bazaModulu) return;
+    const uintptr_t c = (uintptr_t)comp;
+
+    // Sygnal gry: czy klient TRZYMA wejscie ruchu. Zero przyspieszenia = nie
+    // trzyma, i wtedy niczego nie stemplujemy — znacznik ma sie zestarzec sam,
+    // dokladnie tak jak u gracza lokalnego, ktory puscil klawisz.
+    const float* a = (const float*)(c + addr::COMP_PRZYSPIESZENIE);
+    if (!(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] > 1.0f)) return;
+
+    const uintptr_t postac = *(const uintptr_t*)(c + addr::COMP_POSTAC);
+    if (!sensownyWsk(postac)) return;
+    if (!wolnoPisacZnacznik(g_bazaModulu, comp, postac)) return;
+
+    const uintptr_t sm = *(const uintptr_t*)(postac + addr::CHAR_STATE_MACHINE);
+    if (!sensownyWsk(sm)) return;
+    const uintptr_t swiat = *(const uintptr_t*)(sm + addr::KOMP_SWIAT);
+    if (!sensownyWsk(swiat)) return;                 // gra jeszcze nie zbuforowala
+    const float zegar = *(const float*)(swiat + addr::SWIAT_CZAS);
+    if (!(zegar > 0.0f) || zegar > 1.0e7f) return;   // zegar musi byc sensowny
+
+    float* znacznik = (float*)(postac + addr::PIONEK_ZNACZNIK);
+    const float przed = *znacznik;
+    *znacznik = zegar;
+
+    // Pierwsze osiem — zeby cisza w logu znaczyla „wyzwalacz nie zadzialal",
+    // a nie „hak nie stoi". Potem co 600., zeby bylo widac, czy maszyna ruszyla.
+    const LONG ile = InterlockedIncrement(&g_znacznikowUstawionych);
+    if (ile <= 8 || ile % 600 == 0)
+        logLine("CZAS: znacznik %.3f -> %.3f (zegar %.3f, prog %.3f, |przysp|=%.0f) "
+                "maszyna w stanie %d   [%ld raz]",
+                przed, zegar, zegar, *(const float*)(sm + addr::SM_PROG_RUCHU),
+                sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]),
+                (int)*(const int32_t*)(sm + addr::SM_CURRENT_IDX), ile);
+}
+
 static float __fastcall thunkMaxSpeed(void* comp)
 {
     // Dowod, ze hak zyje (zasada 14): bez tego cisza w logu znaczylaby naraz
@@ -2977,6 +3171,10 @@ static float __fastcall thunkMaxSpeed(void* comp)
     static volatile LONG pierwsze = 0;
     if (g_logSpeed && InterlockedIncrement(&pierwsze) == 1)
         logLine("LIMIT: przejsciowka GetMaxSpeed zyje (pierwsze wywolanie)");
+
+    // MUSI byc przed wyjsciem `v > 1.0f` ponizej: przypadek, ktory nas obchodzi,
+    // to wlasnie limit NIEZEROWY, ale za niski (522,8 zamiast 800).
+    odswiezZnacznikRuchu(comp);
 
     const float v = g_origMaxSpeed ? g_origMaxSpeed(comp) : 0.0f;
 
@@ -2986,13 +3184,6 @@ static float __fastcall thunkMaxSpeed(void* comp)
     // Ten hak odpala sie dla pionka zdalnego bez przerwy, a komponent ruchu ma
     // swoja postac jako obiekt nadrzedny — czyli mamy do niej darmowa droge.
     // Rzadko, bo `naprawMagazynekPostaci` wola kod gry.
-    if (g_fixAmmoWlaczony && g_bazaModulu && comp) {
-        static volatile LONG licznik = 0;
-        if ((InterlockedIncrement(&licznik) % 300) == 0
-            && strcmp(czyjKomponent(g_bazaModulu, (uintptr_t)comp), "KLIENT") == 0)
-            naprawMagazynekPostaci(g_bazaModulu,
-                                   *(const uintptr_t*)((uintptr_t)comp + UOBJ_OUTER_OFF));
-    }
 
     if (v > 1.0f) {
         // Probkowanie limitu NIEZEROWEGO — do sprawy szarpania. Po naprawie mapy
@@ -3459,9 +3650,6 @@ static bool patchStorageLoadLog(uintptr_t base)
 static bool patchLoadMapLog(uintptr_t base)
 {
     auto* fn = reinterpret_cast<unsigned char*>(base + addr::LoadMap_OFF);
-    // Bajty ponizej to prolog funkcji GRY — cytat z jej kodu, niezbedny, zeby
-    // sprawdzic, ze latamy wlasciwe miejsce. Nie sa objete licencja MIT tego
-    // projektu (patrz uwaga licencyjna na poczatku pliku).
     static const unsigned char oczekiwane[] = {
         0x56,             // push rsi
         0x57,             // push rdi
@@ -3486,8 +3674,6 @@ static bool patchLoadMapLog(uintptr_t base)
 
     // Kradniemy 6 bajtow = cztery cale instrukcje (push rsi/rdi/r12/r13).
     // Wykonujemy je po przywroceniu rejestrow, zeby stos wygladal jak bez haka.
-    // Wiersz oznaczony „oryginal" to bajty przeniesione Z GRY — cytat niezbedny
-    // do zalatania (patrz uwaga licencyjna na poczatku pliku).
     unsigned char code[] = {
         0x50, 0x51, 0x52,                          // push rax, rcx, rdx
         0x41,0x50, 0x41,0x51, 0x41,0x52, 0x41,0x53,// push r8, r9, r10, r11
@@ -3582,8 +3768,7 @@ static bool patchAlwaysListen(uintptr_t base)
     auto* fn = reinterpret_cast<unsigned char*>(base + addr::ListenBranch_OFF);
     // Kontrola: `84 C0` (test al,al) i `74 0F` (je +0x0F). Bez zgody co do
     // bajtu nie ruszamy niczego — slepe pisanie w kod to najkrotsza droga do
-    // awarii trudniejszej niz naprawiany problem. Same bajty pochodza Z GRY
-    // i nie sa objete licencja MIT tego projektu (patrz poczatek pliku).
+    // awarii trudniejszej niz naprawiany problem.
     static const unsigned char oczekiwane[] = { 0x84, 0xC0, 0x74, 0x0F };
     if (memcmp(fn, oczekiwane, sizeof oczekiwane) != 0) {
         logLine("NASLUCH: bajty pod 0x%llX inne niz oczekiwane (%02X %02X %02X %02X) "
@@ -3609,9 +3794,8 @@ static bool patchAlwaysListen(uintptr_t base)
 
 // ── LATKA: nie wolaj zdarzenia Blueprintu na pustym obiekcie ────────────────
 //
-// Klient ginie 1–3 s po wejsciu do swiata hosta. Raport awarii gry (XML z
-// katalogu Saved/Crashes, czytany przez tools/read-crash-xml.py) daje dokladna
-// sciezke: timer systemu
+// Klient ginie 1–3 s po wejsciu do swiata hosta. Raport awarii
+// (docs/dowody-awaria-klienta/) daje dokladna sciezke: timer systemu
 // zdrowia/wskrzeszania -> `UDimensionSpawnManager::OnActorDestroyed` ->
 // odczyt `AbilityCachedData` -> null. Podczas travelu sieciowego silnik niszczy
 // aktorow starego swiata klienta, a handler zniszczenia siega po obiekcie,
@@ -3636,8 +3820,6 @@ static bool patchBpEventNullGuard(uintptr_t base)
 
     // Kontrola bezpieczenstwa: po patchu gry adresy moga sie przesunac, a slepe
     // pisanie w kod to najkrotsza droga do awarii trudniejszej niz naprawiana.
-    // Bajty ponizej to prolog funkcji GRY — cytat niezbedny do zalatania,
-    // nieobjety licencja MIT tego projektu (patrz poczatek pliku).
     static const unsigned char expect[] = {
         0x48, 0x89, 0x5C, 0x24, 0x08,  // mov [rsp+8],rbx
         0x57,                          // push rdi
@@ -3667,9 +3849,6 @@ static bool patchBpEventNullGuard(uintptr_t base)
     // stad `sub rsp,0x48` (8-0x48 przystaje do 0 modulo 16). W tym miejscu
     // 0x20 to obowiazkowa przestrzen cienia dla wolanego, a wyzej chowamy
     // cztery rejestry argumentowe, bo nasza funkcja moze je zniszczyc.
-    //
-    // Wiersz oznaczony „oryginal" to bajty przeniesione Z GRY — cytat niezbedny
-    // do zalatania (patrz uwaga licencyjna na poczatku pliku).
     unsigned char code[] = {
         0x48, 0x83, 0xEC, 0x48,              // sub  rsp,0x48
         0x48, 0x89, 0x4C, 0x24, 0x20,        // mov  [rsp+0x20],rcx
@@ -3883,10 +4062,20 @@ static DWORD WINAPI heartbeat(LPVOID)
         // Przejsciowki limitow ruchu — zakladane tutaj z tego samego powodu co
         // liczniki: potrzebuja gotowej tablicy obiektow. Sluza do pomiaru
         // (`log_speed`) i do naprawy mapy atrybutow (`fix_attrs`).
-        if (g_logSpeed || g_fixAttrsWlaczony) {
+        if (g_logSpeed || g_fixAttrsWlaczony || g_fixCzasWlaczony) {
             static bool zalozona = false;
             if (!zalozona && g_bazaModulu && w) {
                 zalozona = patchRemoteMovement(g_bazaModulu);
+            }
+            // Licznik stempli — zeby po przebiegu dalo sie odroznic „wyzwalacz
+            // nie zadzialal" od „hak nie stoi", bez czytania calego logu.
+            // Rzadko: znacznik idzie co klatke, wiec meldunek przy kazdej zmianie
+            // zalalby log kilkudziesiecioma wierszami na sekunde.
+            static LONG ostatnioZnacznikow = -1;
+            if (zalozona && (ostatnioZnacznikow < 0
+                             || g_znacznikowUstawionych - ostatnioZnacznikow >= 600)) {
+                ostatnioZnacznikow = g_znacznikowUstawionych;
+                logLine("CZAS: znacznikow ustawionych razem: %ld", ostatnioZnacznikow);
             }
             static LONG ostatnioSync = 0;
             if (zalozona && g_syncRazem != ostatnioSync) {
@@ -4075,6 +4264,21 @@ static DWORD WINAPI worker(LPVOID)
             logLine("NAPELNIANIE: marker WFCoop_fix_dup.txt — bede pomijal powtorne napelnianie");
         } else {
             logLine("NAPELNIANIE: brak markera WFCoop_fix_dup.txt — nie latam duplikatu");
+        }
+    }
+
+    // Znacznik czasu wejscia ruchu pionka zdalnego — patrz `odswiezZnacznikRuchu`.
+    // Osobny marker od `fix_state`, zeby dalo sie zrobic przebieg kontrolny:
+    // po ZDJECIU tego markera sprint ma przestac dzialac, a maszyna wrocic do `Idle`.
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_fix_czas.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_fixCzasWlaczony = true;
+            logLine("CZAS: marker WFCoop_fix_czas.txt — bede stemplowal znacznik "
+                    "wejscia ruchu pionka zdalnego");
+        } else {
+            logLine("CZAS: brak markera WFCoop_fix_czas.txt — nie stempluje");
         }
     }
 

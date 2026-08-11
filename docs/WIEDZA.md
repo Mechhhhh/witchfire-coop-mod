@@ -575,7 +575,7 @@ Hak (`patchPodsluchWejscia`, marker `log_kanal`) loguje nazwę akcji i bajty
 
 ### ROZBIÓR OBRAZU 11.08 — trzy bajty PRZESTAJĄ być pytaniem, a pojawia się inne
 
-Zrobione **bez uruchamiania gry** (zasada 16), na obrazie pliku wykonywalnego (`obraz.py`).
+Zrobione **bez uruchamiania gry** (zasada 16), na zrzucie `obraz/obraz.bin`.
 Wynik zmienia plan przebiegu, więc jest tu w całości.
 
 **a) Maszyna stanów ma TRZY tablice metod, nie jedną.** Adres `0x1418002E0`
@@ -1345,7 +1345,7 @@ dla magazynu klienta, raz dla magazynu hosta.
 ### Brakujące ogniwo ZNALEZIONE: `0x141923AA0` to metoda wirtualna magazynu
 
 Skan `call rel32` dawał **zero** wołających i na tym poprzednie dochodzenie
-utknęło. Odpowiedź dała analiza obrazu (`tools/obraz.py`) i pytanie postawione
+utknęło. Odpowiedź dał zrzut obrazu (`tools/obraz.py`) i pytanie postawione
 inaczej — nie „kto ją woła", tylko **„gdzie ten adres leży jako dana"**:
 
 ```
@@ -1572,6 +1572,197 @@ samą dla broni dołączającego gracza i zobaczyć, **którego adresu brakuje**
 sama droga, która zadziałała przy ruchu: nie zgadywać, gdzie coś powinno się
 stać, tylko zobaczyć, gdzie dzieje się u zdrowego gracza.
 
+### POTWIERDZONE POMIAREM 11.08, 23:57 — `fix_czas` działa, blokuje następny warunek
+
+Pierwszy przebieg z markerem `fix_czas`. Odczyt **mapy warunków obu maszyn
+w tej samej chwili** (`maszyna+0x110`, 14 pozycji, wpis 16 B: znacznik + `int32`):
+
+| warunek | KLIENT | HOST |
+|---|---|---|
+| `State.Condition.Player.IsMoving` | **1** | 0 |
+| **`State.Condition.Player.HasMovementInput`** | **1** | 0 |
+| **`State.Condition.Player.IsOnGround`** | **0** | **1** |
+| pozostałe 11 | 0 | 0 |
+
+**To jest rzecz, której nie dało się osiągnąć przez cały projekt.** Warunek,
+który przy nadpisywaniu zawsze wracał do zera (1822 zapisy, każdy `przed=0`),
+jest teraz liczony przez samą grę jako prawdziwy — bo dostała daną wejściową,
+a nie podstawiony wynik.
+
+Liczby z przebiegu: **8093 stempli**, `znacznik 318.438 -> 318.438`,
+`|przysp|` do **1660**, próg wieku znacznika **`0.100 s`** (odczytany z
+`maszyna+0x494` — stąd stempel MUSI iść co klatkę). `GetMaxSpeed` klienta
+przestał być wyłącznie `522,8`/`265`: pojawiły się próbki `615,0`.
+
+**Nowa ściana, konkretna i zmierzona: `IsOnGround = 0`.** Przejście
+`IdleToWalking` wymaga OBU warunków, więc maszyna dalej stoi w `Idle`.
+
+`IsOnGround` gra liczy tak (`0x141809E44`–`0x141809E65`):
+
+```
+mov  rcx,[maszyna+0x488]   ; pionek
+mov  rdx,[rcx]             ; tablica metod pionka
+call [rdx+0x638]           ; -> komponent ruchu
+mov  rcx,[rax]
+mov  rdx,[rcx+0x570]
+call rdx                   ; IsMovingOnGround() -> al
+movzx esi, al              ; to jest IsOnGround
+```
+
+A `IsMovingOnGround()` w UE to po prostu `MovementMode ∈ {Walking, NavWalking}`.
+Odczyt refleksją potwierdza wprost:
+
+| pole | KLIENT | HOST |
+|---|---|---|
+| `MovementMode` (`komponent+0x168`) | **3** (spadanie) | **1** (chodzenie) |
+| `GroundMovementMode` | 1 | 1 |
+| `MaxWalkSpeed` | 600 | 600 |
+
+**Serwer trzyma pionek klienta w trybie SPADANIA.** To jest następne pytanie:
+czemu `MovementMode` nie schodzi do `Walking`. Podejrzenie do sprawdzenia, nie
+ustalenie: pionek zdalny nie ma po stronie serwera wyniku sprawdzenia podłoża
+albo `UpdatedComponent` nie robi sweepu — obie rzeczy dałyby stałe `Falling`.
+
+### Zgłoszenie gracza z tego przebiegu — trzy objawy, wszystkie spójne z pomiarem
+
+Gracz zgłosił po przebiegu: **broń klienta przeładowywała się w kółko i nie
+dodawało amunicji do magazynka**, oraz **ruch dalej cofało**. Oba pasują do
+tego, co zmierzono, i jedno z nich jest nowym, mocnym dowodem.
+
+**Przeładowanie w pętli to dowód, że ścieżka przeładowania GRY DZIAŁA dla broni
+klienta i mimo to kończy się zerem.** Warunki broni (`ShouldReload`,
+`AutoReloadEnabled`) liczy `0x1418480E0` z tego samego ASC broni, z którego
+czyta `0x141B242F0`. Magazynek pusty ⇒ `ShouldReload` prawdziwe ⇒ auto-przeładowanie
+startuje ⇒ magazynek dalej zero ⇒ warunek znów prawdziwy. Pętla domyka się sama.
+
+To wyklucza „zdolność przeładowania nie dochodzi" i przenosi całe pytanie tam,
+gdzie wskazała analiza statyczna: **czy `0x141B39940` w ogóle ustawia
+`PendingClipRefill` dla broni klienta, i czy coś ten atrybut konsumuje** (§3g).
+
+**Cofanie ruchu mimo działającego `fix_czas`** jest dokładnie tym, czego należało
+oczekiwać po `IsOnGround = 0`: maszyna stoi w `Idle`, sufit prędkości zostaje
+przy `522,8`, więc korekty pozycji trwają. `fix_czas` zdjął jedną z dwóch
+przeszkód, nie obie — i pomiar mówi to samo co gracz.
+
+### Awaria hosta 23:58 — nowa sygnatura, przyczyny NIE ustalono
+
+`EXCEPTION_ACCESS_VIOLATION reading address 0x148`, `SecondsSinceStart 616`,
+sygnatura `abeaa893` — **pierwsze wystąpienie w całym archiwum**. Stos w całości
+w kodzie gry, **ani jednej ramki z naszej biblioteki**:
+
+```
+0x141A01C6B < 0x1417A938D < 0x1417C04F5 < 0x1418DA5D5 < 0x1418D3279 < 0x1418B3EC6 < ...
+```
+
+Ramka `0x1418D3279` leży w **pętli po broniach w ekwipunku** — tej samej, która
+pod `0x1418D332E` woła `0x141B242F0` (§3g).
+
+Hipoteza do sprawdzenia, NIE ustalenie: pętla przeładowania bez końca dobija
+ścieżkę ekwipunku, aż trafia na nullu `+0x148`. Za tym przemawia zbieżność
+miejsca (ta sama funkcja) i objawu (przeładowanie w kółko). Przeciw — nic
+jeszcze nie sprawdzono.
+
+**Czego ta awaria NIE obciąża:** `fix_czas` pisze jednego floata pod
+`pionek+0xC74` i czyta cztery wskaźniki; z ekwipunkiem nie ma styku, a poprawność
+offsetu potwierdza to, że gra policzyła z niego warunek. Rozstrzygnie próba
+kontrolna: przebieg **bez** `fix_czas`. Jeśli awaria wróci, marker jest niewinny.
+
+### Lekcja metodyczna z tego samego przebiegu
+
+Pierwszy odczyt logu o 23:54 pokazał **zero wierszy `CZAS:`** i o mało nie
+zapisałem „wyzwalacz nie działa". Było to okno pomiaru sprzed zjawiska —
+klient dopiero wstawał. Rozstrzygnęło dopiero **próbkowanie szeregu czasowego**
+(`tools/probka-ruchu.py`): `Acceleration` bywa niezerowe w 31% próbek, więc
+wyzwalacz miał na czym stać. To dokładnie zasada 3, tym razem złapana na czas.
+
+Drugi wniosek: `LIMIT: GetMaxSpeed` w logu **nie jest** dowodem, że gracz się
+rusza — ta funkcja liczy sufit co klatkę, także gdy postać stoi.
+
+## 3g. Amunicja — `0x141B242F0` to ZACISK W DÓŁ, nie napełnianie (analiza statyczna)
+
+Ustalone na zrzucie obrazu, **bez uruchomionej gry**; potwierdzone przez
+niezależną próbę obalenia, która wyostrzyła sformułowanie.
+
+```
+CurrentAmmoInClip := min( CurrentAmmoInClip, ClipSize, CurrentAmmo )
+```
+
+**Pierwszy operand minimum JEST polem docelowym.** Dlatego funkcja nie może
+NIGDY podnieść magazynka: przy pustym magazynku wynik jest zerem niezależnie
+od zapasu 90. To domyka sprawę „powtarzanie wywołania nic nie dało" — nie
+mogło dać. I domyka pytanie, czemu `fix_ammo` ma zostać zdjęty.
+
+| adres | rola |
+|---|---|
+| `0x141B2431A` | literał `ClipSize`; odczyt przez `0x141651D00` (`GetNumericAttribute` na ASC broni `broń+0x958`) |
+| `0x141B24351` | `call 0x141B25D10` → składnik A |
+| `0x141B2435E` | `minss xmm7, xmm6` |
+| `0x141B24362` | `call 0x141B25AA0`, wołana z `edx = 0` |
+| `0x141B2436A` | `minss xmm6, xmm7` |
+| `0x141B243BB` | zapis przez gniazdo 180 ASC (`[rdi+0x5A0]`), atrybut w `rdx`, wartość w `xmm2` |
+
+**Semantyka obu składników** (obie mają wspólnego strażnika „magazynek == 0
+**i** zapas == 0", na którym zwracają stałą `1.0f`):
+
+```
+0x141B25D10(broń)      = InfiniteClip ? 1.0f : CurrentAmmoInClip
+0x141B25AA0(broń, dl)  = InfiniteClip ? 1.0f : CurrentAmmo      (dl wybiera postać wyniku; wołający daje 0)
+```
+
+Znaczniki sprawdzane przez `[ASC+0x120]` → `call [rbx+0x18]`:
+`Cheat.InfiniteClip` (`0x1450498E8`), `Status.Weapon.InfiniteClip` (`0x145049910`).
+
+**Czym więc gra naprawdę napełnia magazynek:** `0x141B39940` — wylicza różnicę
+`ClipSize − CurrentAmmoInClip`, sprawdza `|różnica| > 1e-8` (czyli „już pełny —
+nic nie rób") i ustawia atrybut **`PendingClipRefill`**. `0x141B242F0` jest
+wołana dopiero PO niej, jako domknięcie. Dwóch wołających `0x141B242F0`:
+`0x1418CACE5` (podniesienie amunicji) i `0x1418D332E` (pętla po ekwipunku).
+
+**Test rozstrzygający dla następnego przebiegu:** wszystkie trzy odczyty idą
+przez `0x14088D730`, który przy braku podobiektu zestawu w ASC zwraca `0.0f`.
+Więc w logu klienta:
+
+- `ClipSize > 0` → zestaw `DimensionAmmoAttribSet` istnieje, magazynek jest
+  naprawdę pusty i szukać trzeba wyżej (czy `0x141B39940` w ogóle się wykonuje
+  dla broni klienta),
+- `ClipSize == 0` → ASC broni klienta **nie ma zestawu amunicji**, i naprawa
+  dotyczy inicjalizacji zestawu, a nie napełniania.
+
+**Czego tu NIE ustalono:** czy gniazdo 180 zapisuje `BaseValue` czy
+`CurrentValue`. Od tego zależy, czy ta funkcja jest tylko zaciskiem, czy
+zatwierdzeniem wartości bieżącej do bazy.
+
+## 3h. Stamina — regeneracja to GameplayEffect za bramką roli (analiza statyczna)
+
+Ustalone na zrzucie obrazu; cztery twierdzenia przeszły próbę obalenia bez
+poprawek. **Pomiaru na żywej grze jeszcze nie było.**
+
+| co | gdzie |
+|---|---|
+| regeneracja to **okresowy `GameplayEffect`** klasy `UDimensionStaminaRegenEffect`, nie tik komponentu | konstruktor `0x1416BC860` |
+| magnituda liczy się z `ActualStaminaRegenSpeed` (atrybut **pochodny**), nie z `StaminaRegenSpeed` | `0x1416BD860`, literał pod `0x1416BDB3D` |
+| efekt nakładany jest w **całym obrazie tylko raz** — w inicjalizacji ASC gracza | `0x1418799B0` (gniazdo `+0x8B8`), jedyny wołający `StaticClass` efektu: `0x141879AB5` |
+| **bramka roli**: `BeginPlay` obu klas postaci woła tę inicjalizację TYLKO gdy `Role == 3` | `0x14185F12E cmp byte ptr [rsi+0xF0], 3` |
+| wygaszanie tagami właściciela: `IgnoreTags = { Status.Stamina.Full.Max, Status.Stamina.Drained }` | `0x1416BCC9C`, `0x1416BCCD4`, kontener kopiowany do `[efekt+0x3F8]` |
+| zużycie i opóźnienie regeneracji to osobne ścieżki efektowe | `UseStamina 0x14189FBC0`, `DepleteStamina 0x141867E10`, opóźnienie `0x14185BF90` |
+
+**Korekta liczby, na której stała hipoteza:** `522,8` to `615 × 0,85` (chód
+w bok), **a nie** `615 × 0,83` (mnożnik staminy — ten daje `510,2`). Czyli sam
+ten pomiar **nie jest** dowodem, że stamina stoi na zerze. Rozróżnienie było
+już w tym pliku, w sekcji o rozbieżności prędkości w sprincie.
+
+**Następny pomiar (gdy przyjdzie kolej na staminę):** trampolina na
+`0x1418799B0` logująca `rcx` (pionek), `[rcx+0xF0]` (rola), `[rcx+0x528]` (ASC)
+i nazwę pionka. Trzy możliwe wyniki: haka nie widać dla drugiego pionka →
+serwer nie doszedł do `BeginPlay` albo rola nie była 3 w tej chwili; hak się
+odpala z zerowym ASC → inicjalizacja na pustym ASC; hak czysty → problem jest
+ZA bramką i przenosi się na `0x141647990` (uchwyt efektu `-1` znaczy, że
+bramka autorytetu w `0x140886971` odrzuciła nałożenie).
+
+**Czego tu NIE ustalono:** offsetów pól wewnątrz `UDimensionStaminaAttribSet`
+(kod sięga po nie przez `FindProperty` po nazwie, nie przez stały offset), oraz
+czy istnieje blueprintowa podklasa efektu nakładana poza ścieżką natywną.
+
 ## 3c. Host traci widok pierwszoosobowy przy każdym dołączeniu
 
 **Korekta wcześniejszego wpisu.** Zapisałem to jako „zdarzyło się raz, nie
@@ -1673,15 +1864,15 @@ logowane „`-> nil`" nigdy nie oznaczało błędu. Prawdziwy powód: gdy kontro
 **już ma pawna**, UE tylko go teleportuje. Naprawa: `UnPossess` +
 `K2_DestroyActor` przed wywołaniem, potem sprawdzać `pc.Pawn`, nie wynik.
 
-## 5a. Analiza obrazu pliku wykonywalnego — kod bez działającej gry
+## 5a. Zrzut odszyfrowanego obrazu — analiza kodu bez działającej gry
 
-Pytanie o kod nie musi kosztować uruchomienia gry (trzy minuty startu plus
-kliknięcie gracza). Odpowiada na nie analiza **obrazu pliku wykonywalnego**,
-prowadzona offline przez `tools/obraz.py`. Sam obraz nie jest częścią
-repozytorium — narzędzie czyta katalog wskazany przez `WF_OBRAZ_DIR`, który
-dostarcza użytkownik.
+Sekcja `.text` na dysku jest zaszyfrowana przez SteamStub, więc **każde** pytanie
+o kod wymagało dotąd działającej gry: trzy minuty startu plus kliknięcie gracza.
+W pamięci kod jest już odszyfrowany, a wystarczy **jeden** zrzut — nawet z gry
+stojącej w menu.
 
 ```
+tools/zrzut-kodu.py          zapisuje obraz exe do obraz/obraz.bin  (109 MB)
 tools/obraz.py fun   ADR     deasembluje, z LITERAŁAMI przy `lea rip`
 tools/obraz.py xref  ADR     kto woła bezposrednio (call/jmp rel32)
 tools/obraz.py dane  ADR     gdzie adres lezy JAKO DANA -> tablice metod
@@ -1699,6 +1890,9 @@ Dwie rzeczy okazały się kluczowe i warto o nich pamiętać:
    wołających. Zanim to dołożyłem, wyszło mi z tego fałszywe „docs się mylą" —
    po rozwinięciu okazało się, że łańcuch z 21:18 był opisany poprawnie.
 
+Uwaga o zrzucie: jeśli gra działała z markerami, w obrazie są już **nasze łatki
+tablic metod**. Do analizy samej gry robić zrzut z instancji bez markerów
+(`WFCoop_no_patch.txt`).
 
 ## 6. Adresy potwierdzone
 
@@ -1776,3 +1970,312 @@ zgadnięte) — wszystkie używa `tools/stan-gracza.py`:
 | „trzymana broń klienta ma zerowe mnożniki prędkości" | 22:52, serwerowa kopia: `SpeedMultiplier`/`OnTargeting`/`Strafe` = **1.0/1.0/1.0**, 5 zestawów atrybutów, 5 zdolności z `AbilityWeaponLoadAmmo_C`. Broń klienta jest zdrowa |
 | „brak ruchu klienta to skutek stanu broni" | j.w. — ścieżka prędkości przechodzi przez broń u OBU graczy; zerem jest wartość bazowa z pustej mapy atrybutów ruchu (§3b) |
 | „`0x141923AA0` nie ma wołających, bo to delegat" | ma jednego: to metoda wirtualna `DimensionItemStorage`, gniazdo 99. Skan `call rel32` z definicji jej nie widział |
+
+---
+
+# Zamknięte 11.08 (przeniesione z dziennika)
+
+## OBALONE 20:39 — powtorzenie napelniania NIE wystarcza
+
+Trzecia wersja naprawy amunicji dziala mechanicznie i nie dziala skutkiem.
+Piec wywolan na WLASCIWEJ broni (trzymany HandCannon pionka zdalnego,
+wziety przez `0x141874570`), a magazynek dalej zero:
+
+```
+20:39:16  AMUNICJA: CurrentAmmoInClip = 0  dla BP_HandCannon_Medium_C
+20:39:17..19  napelniam trzymana bron pionka zdalnego (2/5 ... 5/5)
+```
+
+**Co to obala:** hipoteze „funkcja policzyla zero, bo zapasu jeszcze nie bylo,
+wiec wystarczy ja powtorzyc". Wczesniejszy pomiar pokazal `CurrentAmmo=90`
+przy `CurrentAmmoInClip=0`, wiec zapas BYL — a `0x141B242F0` i tak wpisuje zero.
+Czyli ta funkcja NIE liczy po prostu `min(zapas, ClipSize)`; cos jeszcze
+rozstrzyga o wyniku i tego czegos brakuje u dolaczajacego gracza.
+
+**Nastepny krok (nie zgadywac dalej):** wejsc do srodka `0x141B242F0` hakiem
+i zalogowac WEJSCIA obu `minss` osobno — czyli wyniki `0x141B25D10`
+i `0x141B25AA0` — dla broni hosta i dla broni klienta w jednym przebiegu.
+Ktora z tych dwoch liczb jest zerem u klienta, ta wskazuje wlasciwa przyczyne.
+Obie funkcje dotykaja `CurrentAmmoInClip`, `CurrentAmmo` oraz
+`Cheat.InfiniteClip` (`WIEDZA.md` §3d), wiec zgadywanie po nazwach juz raz
+zawiodlo.
+
+**Sprint:** w tym przebiegu zero wystapien `GetMaxSpeed = 800` i zero udanych
+przejsc, ale klient dolaczyl minute wczesniej i nie ma pewnosci, czy gracz
+sprintowal w oknie pomiaru. To NIE jest wynik — to brak pomiaru.
+
+
+## 21:23 — NADPISYWANIE WARUNKU TO SLEPA ULICZKA (obalone wlasnym pomiarem)
+
+Podtrzymywanie `HasMovementInput` co klatke NIE POMAGA:
+
+```
+warunek ruchu ustawiony 1822 razy      <- piszemy w kazdej klatce
+licznik przed=0                        <- i za kazdym razem jest juz wyzerowany
+odczyt na zywo: HasMovementInput=0  IsMoving=0
+maszyna 0 -> 0 nie doszla  droga: 0->1(nie)
+```
+
+Zapis DOCHODZI (`przed=0 po=1`), ale maszyna przelicza warunki w swoim tiku
+i kasuje nasza wartosc, zanim kolejka przejsc zostanie oceniona. Wyscig
+przegrywamy niezaleznie od czestotliwosci — wiec **nadpisywanie WYNIKU nie ma
+szans i trzeba znalezc funkcje, ktora ten warunek WYLICZA**.
+
+### Mechanizm kolejki przejsc — rozebrany do konca (i dziala poprawnie)
+
+| co | gdzie |
+|---|---|
+| `AddTransitionToQueue` (prawdziwa) | `0x1417E1B60` |
+| szuka nazwy w tablicy | `maszyna+0x208`, licznik `+0x210`, element **64 B** |
+| tablica ma **42 przejscia**, w tym `IdleToWalking` | zmierzone, identyczna u obu graczy |
+| po znalezieniu wola | `0x1417E19F0` |
+| ta dopisuje do KOLEJKI | `maszyna+0x218`, licznik `+0x220`, element 64 B |
+| kolejka jest oprozniana przez tik | zmierzone: licznik zawsze 0 przy odczycie z zewnatrz |
+
+Czyli caly nasz lancuch dziala: nazwa jest znajdowana, przejscie kolejkowane,
+kolejka przerabiana. Odrzuca je dopiero OCENA WARUNKOW w tiku — a warunek do
+tego czasu jest juz z powrotem zerem.
+
+### ROZSTRZYGNIETE 11.08 wieczorem — patrz sekcja 3f ponizej
+
+Szukanie funkcji wsrod 34 wolajacych `0x14180A350` bylo **oparte na blednym
+zalozeniu** i nie moglo sie udac. Rozstrzygniecie, komplet adresow i przyczyna
+sa w sekcji **3f**. Czterej kandydaci wypisani tu wczesniej (`0x141885900`,
+`0x141885B70`, `0x1418D76B0`, `0x1418DE510`) sa **sprawdzeni i odrzuceni** —
+dwaj pierwsi ustawiaja `RunToggled`, dwaj pozostali warunki broni.
+
+## 3f. HasMovementInput — warunek NIE JEST przechowywany, tylko przeliczany ze znacznika czasu
+
+**Zalozenie, ktore kosztowalo dzien:** „funkcja liczaca warunek jest wsrod 34
+wolajacych `UpdateCustomConditionBool` (`0x14180A350`)". Jest bledne.
+
+`tools/warunki.py 0x14180A350` mapuje **kazde** z tych 34 wywolan na nazwe
+ustawianego znacznika. Wynik: 32 razy warunek **broni**, 2 razy
+`State.Condition.Player.RunToggled`. Zadnego warunku ruchu tam nie ma.
+
+Powod: `0x14180A350` to tylko **opakowanie**, ktore sklada strukture parametru
+i wola prawdziwego pracownika `0x14180A210`:
+
+```
+0x14180A350  sub  rsp,0x38
+0x14180A354  mov  [rsp+0x20],rdx      ; znacznik
+0x14180A35E  movzx eax,r8b
+0x14180A362  mov  [rsp+0x28],eax      ; wartosc
+0x14180A36E  call 0x14180A210
+```
+
+`tools/warunki.py 0x14180A210` pokazuje wsrod wolajacych **`0x141809CC0`**,
+ktora ustawia komplet **osmiu** warunkow ruchu gracza jednym ciagiem:
+
+| adres wywolania | warunek |
+|---|---|
+| `0x141809D7F` | `IsMoving` |
+| **`0x141809E0F`** | **`HasMovementInput`** |
+| `0x141809EE3` | `CoyoteTimeEnabled` |
+| `0x141809F7A` | `IsOnGround` |
+| `0x141809FC4` | `HasRunningInput` |
+| `0x14180A0BA` | `HasRunningVelocity` |
+| `0x14180A1A1` | `RunToggled` |
+| `0x14180A1EF` | `RunToggleEnabled` |
+
+### Z czego liczy sie ten warunek — cala arytmetyka
+
+```
+0x141809D84  mov    rcx,[maszyna+0x488]   ; pionek
+0x141809D8B  call   0x141871230           ; xmm0 = [pionek+0xC74]   (dwie instrukcje)
+0x141809D93  comiss xmm0,0
+0x141809D96  jbe    -> ebx = 0            ; znacznik musi byc DODATNI
+0x141809DB3  movss  xmm6,[swiat+0x5A0]    ; UWorld::TimeSeconds
+0x141809DBB  call   0x141871230
+0x141809DC0  subss  xmm6,xmm0             ; wiek znacznika
+0x141809DC4  mov    ebx,1
+0x141809DC9  comiss xmm6,[maszyna+0x494]  ; prog
+0x141809DD0  jbe    -> zostaw ebx = 1     ; wiek <= prog  =>  PRAWDA
+0x141809DD2  mov    ebx,r14d              ; inaczej FALSZ
+```
+
+Czyli **`HasMovementInput = (znacznik > 0) && (zegar - znacznik <= prog)`**,
+gdzie znacznik to jeden `float` pod `pionek+0xC74`. Warunek nigdzie nie jest
+przechowywany — dlatego nadpisywanie go bylo z gory przegrane (zasada
+„nadpisywanie wyniku funkcji przeliczanej co klatke").
+
+### Kto ten znacznik zapisuje — i dlaczego serwer nie
+
+`tools/pole.py 0xC74 --funkcje` daje dwa zapisy w kodzie postaci, oba
+**identycznym ciagiem**:
+
+```
+call [vt+0x738]         ; AddMovementInput — LOKALNA obsluga wejscia
+call [vt+0x160]         ; AActor::GetWorld
+mov  ecx,[swiat+0x5A0]  ; TimeSeconds
+mov  [pionek+0xC74],ecx
+```
+
+- `0x14187E285` (w `0x14187DFC0`) i `0x14187E60C` (w `0x14187E2B0`) — dwie osie
+  wejscia ruchu (przod/tyl i boki: pierwsza czyta wektor spod `[rax+0x00/04/08]`,
+  druga spod `[rax+0x10/14/18]`).
+- `0x141853CA3` — **konstruktor postaci** (obok literalu `InventoryComponent`)
+  ustawia `[pionek+0xC74] = -1.0f`.
+
+Serwer nie wykonuje lokalnej obslugi wejscia dla pionka **zdalnego**, wiec pole
+zostaje na `-1.0f` z konstruktora i przegrywa juz na pierwszym warunku
+(`znacznik > 0`). Stad maszyna serwera nigdy nie wychodzi z `Idle`, a bez
+`Walking` nie ma drogi do `Running` — czyli sufit 522,8 zamiast 800.
+
+### Latka `fix_czas` — i dlaczego wyzwalaczem NIE jest kanal stanu
+
+Stemplujemy `pionek+0xC74` zegarem swiata gry, gdy komponent ruchu ma niezerowe
+`Acceleration` (**`komponent+0x22C`**, FVector — offset z instrukcji
+`0x1436DB8EA movsd [rbx+0x22c],xmm0`, ktora je zeruje). To sygnal **gry**:
+`Acceleration` rozpakowuje ona sama z RPC klienta (zmierzone wczesniej: 2000
+i 4000 dla pionka zdalnego).
+
+Kanal stanu (`fix_state`) do wyzwalania **sie nie nadaje**: wysyla tylko przy
+zmianie sprintu albo kucania, wiec zwykly chod nie wyzwolilby go ani razu.
+
+Hak wisi w istniejacej przejsciowce `GetMaxSpeed` (gniazdo 130), **przed**
+wyjsciem `v > 1.0f` — bo przypadek, ktory nas obchodzi, to limit niezerowy,
+ale za niski.
+
+Zabezpieczenia zapisu pod glebokim offsetem: pionek musi byc zdalny (klasa
+obiektu `Player` kontrolera **nie** jest `DimensionLocalPlayer`), jego klasa
+musi dziedziczyc po `DimensionPlayerCharacter`, a wartosc zastana pod `+0xC74`
+musi byc `-1.0f` albo sensownym czasem. Ocena „nie umiem powiedziec" (pionek
+bez kontrolera w pierwszych klatkach) **nie jest zapamietywana** — inaczej
+latka wylaczylaby sie na cala sesje, a w logu wygladaloby to jak nieudany
+wyzwalacz.
+
+## POTWIERDZONE PRZEZ USUNIECIE 21:1x — awarie hosta powodowala naprawa amunicji
+
+Zdjecie markera `fix_ammo` zatrzymalo awarie hosta przy sprincie i slizgu.
+Przyczyna: `naprawMagazynekPostaci` wolala `0x141B242F0` bezposrednio,
+z sygnatura wziesta z deasemblacji. Marker jest teraz ZDJETY po obu stronach,
+wiec amunicja klienta jest znowu zepsuta (pistolet przeladowuje sie w kolko).
+
+Poprawna droga do amunicji: HAK na `0x141B242F0` (trampolina), ktory podglada
+wynik, gdy funkcje wola SAMA GRA — nie wolanie jej przez nas.
+
+### KOREKTA własnego wniosku: „kłamie tylko HUD" było błędne
+
+Napisałem, że dane są dobre, a psuje się samo wyświetlanie — bo `Stamina` wynosi
+`88/88`, a `Health = 83`. Gracz zbił to jednym zdaniem: gdyby psuł się sam HUD,
+broń dałoby się wystrzelić. Pomiar przyznał mu rację i **`AmmoInClip = 0` także
+w serwerowej kopii broni klienta**, przy `6` u hosta. Zero po stronie serwera nie
+może być usterką wyświetlania.
+
+Wniosek poprawiony i przeniesiony do `WIEDZA.md` §3a: klient nie dostaje pełnej
+inicjalizacji gracza. Twardy ślad liczbowy: `ActivatableAbilities` ma **10**
+pozycji u hosta i **8** u klienta — tak samo po stronie serwera, więc to brak
+nadania, nie zgubiona replikacja. Ładowanie amunicji jest w tej grze zdolnością
+(`AbilityWeaponLoadAmmo_C`), co spina to w jedną całość.
+
+Lekcja metodyczna: **zgodność atrybutów nie dowodzi, że stan jest zdrowy.**
+Sprawdzałem wartości, które akurat się replikują, i wziąłem ich zgodność za dowód
+sprawności całej postaci. Sprawdzać to, czego objaw dotyczy wprost — tu amunicję
+w broni, nie życie w atrybucie.
+
+## Następny przebieg — co ustawić
+
+- markery **hosta**: `always_listen`, `fix_booster`, `fix_input`, `log_owner`,
+  `log_fill`; `fix_move` **zdjęte** (łatka diagnostyczna, odrzucona),
+- markery **klienta**: `join_ip`, `fix_weapon`, `fix_effects`, `log_fill`,
+- **pytania o hosta rozstrzygać na mapie MENU, bez kliknięć gracza.** Sprawdzone
+  22:50: podwójne napełnianie, duplikaty zdolności i podwójny komplet broni
+  odtwarzają się z hostem w menu. Klient wtedy zamarza (ta sama mapa), więc do
+  pomiarów po stronie klienta nadal trzeba wyprawy,
+- **najpierw sprawdzić, czy pytania nie da się rozstrzygnąć na zrzucie obrazu** —
+  deasemblacja, odwołania, literały i granice funkcji nie wymagają już gry
+  (`tools/obraz.py`),
+- czego pilnować: gracz **nie może zginąć** w trakcie dołączania (skaża pomiar),
+  a instancja po awarii drugiej strony jest **popsuta** i nie nadaje się na wzorzec.
+
+---
+
+## Zamknięte hipotezy 1-18 (przeniesione z dziennika 11.08)
+
+**Kanał POPRAWIONY i WDROŻONY (11.08, 18:25).** Biblioteka zbudowana bez
+ostrzeżeń i skopiowana do katalogu gry (`md5=33e5aa5b`). Trzy zmiany, wszystkie
+z rozbioru obrazu, nie z domysłu (`WIEDZA.md`, „ROZBIÓR OBRAZU 11.08"):
+
+1. definicję akcji kopiujemy **operatorem przypisania gry** `0x1417A3E50` —
+   poprzedni `memcpy` zabierał grze odwołanie do `TSharedPtr` przy każdym
+   podaniu akcji,
+2. bajty `+0x38..+0x3F` bierzemy z **podsłuchu prawdziwego wejścia**;
+   `bCustomTriggered` = **0**, bo tyle wpisuje sama gra (`0x141806FDB`) —
+   nasza jedynka była zgadnięta i zgadnięta źle,
+3. podanie akcji jest **dwustopniowe**: gniazdo 147, a gdy stan nie drgnie —
+   gniazdo 150, czyli pełna ścieżka wejścia gry (bramka + zapis `+0x2F8`).
+
+Jeden przebieg rozstrzyga więc trzy pytania naraz.
+
+**Budowa kanału — ODBLOKOWANA, wszystkie elementy zmierzone (02:22).**
+Gracz zdecydował: robimy kanał (11.08). Nic już nie jest zgadywane:
+
+| element | wartość |
+|---|---|
+| wysyłka z klienta | `ProcessEvent` — **gniazdo wirtualne 68** |
+| parametry w ramce | `FFrame::Locals` = **`+0x28`** |
+| transport | `ServerSetInversedScreenRatio(float)`, wartość ≥ 1000 = nasza |
+| zastosowanie | `ProcessExternalInputAction` — **gniazdo 147** maszyny stanów |
+| treść | kopia 56-bajtowej definicji z `InputsToCapture` + `KeyEvent` (+0x38) |
+
+Hipoteza 14 potwierdzona (pomiar na odbiorze RPC ruchu u hosta). Zostaje sama
+implementacja — mechaniczna.
+
+Hipotezy 11 i 12 zamknięte: **12 potwierdzona**. Gra nie nadpisuje
+`UpdateFromCompressedFlags` (jedenaście nadpisań w komponencie ruchu, żadne to
+nie jest), a cały `DimensionStateMachineComponent` ma 47 funkcji i **zero RPC**.
+Dowód ruchem: serwerowa kopia klienta nie opuszcza `Idle`, gdy klient przechodzi
+u siebie przez pięć stanów.
+
+Hipotezy 7–10 zamknięte 11.08 — wyniki w `WIEDZA.md`:
+**7 i 8 potwierdzone** (naprawa mapy atrybutów działa, klient chodzi; strażnik
+duplikatu drugi raz z rzędu), **9 potwierdzona** (serwer ani razu nie policzył
+prędkości sprintu ani ślizgu — przy ślizgu widzi samo kucanie, 265),
+**10 obalona** (dash zgadza się co do dziesiętnych, więc symulacja i tor ruchu
+są zgodne — rozjeżdża się wyłącznie prędkość maksymalna wynikająca ze stanu).
+
+Hipotezy 4, 5 i 6 zamknięte w przebiegu 01:11 — wyniki w `WIEDZA.md`:
+**4 obalona** (wszystkie trzy znaczniki blokady zerowe, a limit i tak 0.000),
+**5 potwierdzona i doprecyzowana** (13 z 19 wartości w mapie wyzerowanych, przy
+poprawnych atrybutach w ASC — psuje się wyłącznie podręczna kopia),
+**6 potwierdzona** (dokładnie jedno pominięcie, host działa jak w singleplayerze).
+
+Hipoteza 5 z poprzedniej wersji („brak startowego `GameplayEffect`") **odpadła
+przed pomiarem**: postać klienta ma na serwerze komplet 11 zestawów atrybutów
+i `DimensionMovementAttribSet` z poprawnymi `SprintSpeed=800`, `Acceleration=2000`,
+`NormalSpeed=615` — identycznie jak host.
+
+Hipotezy 1–3 zamknięte 10.08 wieczorem — wyniki w `WIEDZA.md`:
+**1 obalona** (broń klienta jest zdrowa, przyczyną braku ruchu jest pusta mapa
+atrybutów ruchu), **2 obalona** (to host ma dwa duplikaty, nie klient dwa braki),
+**3 rozstrzygnięta** (`0x141923AA0` = gniazdo 99 `DimensionItemStorage`;
+podwójne napełnianie potwierdzone hakiem).
+
+Wszystko, co dziś rozstrzygnięte, jest w `WIEDZA.md`. Poniżej zostają tylko
+lekcje metodyczne, bo dotyczą sposobu pracy, a nie samej gry.
+
+### ZASADA: pułapka sprzętowa NIE w trakcie dołączania klienta
+
+Sprawdzone dwa razy tego samego wieczoru, oba razy z tym samym skutkiem: host
+zamarza, klient widzi kilka assetów, przebieg do wyrzucenia.
+
+| próba | co | skutek |
+|---|---|---|
+| 21:01 | pułapka na `AActor::SetOwner`, 400 zatrzymań | host padł (`fc5c66e3`, adres `0xFFFFFFFFFFFFFFFF`) |
+| 21:13 | pułapka na `0x14190306C`, 20 zatrzymań | host zamarł, klient bez świata |
+
+Liczba zatrzymań nie ma znaczenia — **samo zatrzymywanie wątku gry w trakcie
+nawiązywania połączenia rozbija sesję**. Sieć w UE ma limity czasu i sekwencję
+otwierania kanałów; zatrzymany wątek gry ją łamie.
+
+Wolno używać pułapek sprzętowych **po** ustabilizowaniu sesji i tylko na rzadkich
+zdarzeniach (zapis do konkretnego pola, jedno rozgałęzienie) — tak powstały
+dobre pomiary prędkości i przyspieszenia. Do wszystkiego, co dzieje się
+**w chwili dołączania**, jedynym bezpiecznym narzędziem jest **hak w procesie**,
+który zapisuje do logu i wraca.
+
+Dodatkowo: pomiar z 21:13 (dwadzieścia identycznych trafień, rejestry niebędące
+wskaźnikami na obiekty) jest **odrzucony** — trafiłem w to miejsce w innym
+kontekście, niż zakładałem, i nie wolno z niego nic wnioskować.
+

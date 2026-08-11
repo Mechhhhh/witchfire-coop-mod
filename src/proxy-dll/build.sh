@@ -16,8 +16,7 @@ mkdir -p "$OUT"
 # Budujemy DWA warianty tej samej biblioteki. Powod: obie instancje dziela
 # katalog gry, wiec jeden plik nie moze nalezec naraz do UE4SS i do nas.
 # WINEDLLOVERRIDES dziala PER PROCES, wiec host bierze dwmapi natywne (UE4SS),
-# a klient xinput1_3 natywne (my) — i kazdy dostaje dokladnie jeden wstrzykiwacz.
-# (Dlaczego xinput1_3, a nie version: patrz komentarz w tools/launch-instance2.sh.)
+# a klient version natywne (my) — i kazdy dostaje dokladnie jeden wstrzykiwacz.
 build() {
     local name="$1"; shift
     x86_64-w64-mingw32-g++ \

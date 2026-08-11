@@ -302,7 +302,7 @@ Po drodze wyszło też, że wcześniejsze „gra od razu zfreezowała w menu" (1
 
 | co | wynik |
 |---|---|
-| łatka broni na drodze B | `BRON: poddaje sie po 40 probach` w obu przebiegach (15:11, 15:34) — nie znalazła postaci o `Role == 2` |
+| łatka broni na drodze B | `BRON: poddaje sie po 40 probach — **OBALONE 16:25**: zawodzil budzet prob liczony od startu procesu, nie latka` w obu przebiegach (15:11, 15:34) — nie znalazła postaci o `Role == 2` |
 
 ## Zasada porównywania
 
