@@ -1,0 +1,18 @@
+; Gra importuje z XINPUT1_3.dll wylacznie ordynaly 2 i 3 (sprawdzone objdumpem).
+; Eksportujemy jednak CALA powierzchnie biblioteki — bo Wine ubija proces, gdy
+; ktokolwiek siegnie po funkcje, ktorej podrobka nie ma. Tak zginela proba
+; z version.dll: "unimplemented function VERSION.dll.GetFileVersionInfoSizeExW".
+;
+; Nie przekierowujemy niczego: semantyka XInput pozwala uczciwie odpowiedziec
+; "brak kontrolera" (ERROR_DEVICE_NOT_CONNECTED), wiec nie musimy ladowac
+; prawdziwej biblioteki i nie ryzykujemy niezgodnosci sygnatur.
+LIBRARY xinput1_3
+EXPORTS
+    XInputGetState                  @2
+    XInputSetState                  @3
+    XInputGetCapabilities           @4
+    XInputEnable                    @5
+    XInputGetDSoundAudioDeviceGuids @6
+    XInputGetBatteryInformation     @7
+    XInputGetKeystroke              @8
+    XInputGetStateEx                @100

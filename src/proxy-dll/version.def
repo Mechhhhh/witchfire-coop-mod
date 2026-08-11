@@ -1,0 +1,7 @@
+; Gra importuje z VERSION.dll dokladnie trzy funkcje, w wersjach ANSI
+; (sprawdzone objdumpem). Nazwy musza byc NIEOZDOBIONE.
+LIBRARY version
+EXPORTS
+    GetFileVersionInfoSizeA
+    GetFileVersionInfoA
+    VerQueryValueA

@@ -1,0 +1,10 @@
+; Nazwy eksportow musza byc NIEOZDOBIONE — gra importuje je po nazwie, a nie po
+; ordynale (sprawdzone objdumpem: DwmSetWindowAttribute, DwmGetCompositionTimingInfo,
+; DwmIsCompositionEnabled, DwmFlush). Bez tego pliku mingw dokleilby dekoracje
+; i gra nie znalazlaby importow.
+LIBRARY dwmapi
+EXPORTS
+    DwmSetWindowAttribute
+    DwmGetCompositionTimingInfo
+    DwmIsCompositionEnabled
+    DwmFlush
