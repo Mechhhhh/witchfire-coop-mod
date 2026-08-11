@@ -1,0 +1,169 @@
+# witchfire-coop
+
+An unofficial two-player co-op mod for **Witchfire** — a game that ships with no
+multiplayer at all. It is a proxy DLL injected into the game process that patches
+memory, hooks vtables, and calls the game's own code to switch on networking the
+game already contains but never exposes.
+
+Runs on Linux through Proton. Works on Windows too — the mod itself is a plain
+Windows DLL; only the launch scripts are Linux-specific.
+
+**Status: not finished, and honestly not close.** Two players can play together
+for over two hours without a crash. Two of four known problems are fixed and
+confirmed by repeated runs. Two are still open — one of them has its cause fully
+traced but no working fix. Read "What does not work" before you try it.
+
+---
+
+## What works
+
+Every claim below was measured, not assumed.
+
+- **Both players are in the same world and see each other.** Over two hours of
+ joint play without a crash.
+- **The host is not disturbed by a join.** A joining player used to reload the
+ host's inventory a second time, giving the host a duplicate weapon set, wiping
+ the currency earned in the run, and breaking the first-person view. Fixed by a
+ guard that skips the repeated fill; the player's own report was *"the host now
+ behaves like in singleplayer."*
+- **The client can walk.** The client's movement component had 13 of 19 cached
+ movement attributes zeroed, so the server's speed limit for that pawn computed
+ `0.0` and pulled the player back on every step. Fixed by re-running the game's
+ own attribute synchronisation once the data exists: `0.000 → 355.000`.
+- **The client draws a weapon** and can shoot the host's world.
+
+## What does not work
+
+- **Sprinting and sliding stutter.** The server does not know the remote player
+ is sprinting, so it computes 615 (normal run) or 265 (crouch) instead of 800,
+ and corrects the client backwards. The cause is fully traced (see below); the
+ fix is not working yet.
+- **The client's magazine stays empty**, so reloading loops forever. The cause is
+ found and a fix is in testing at the time of writing.
+- Several HUD elements are not filled in for the client (potion counter, run
+ currency, objective panel, own arrow on the minimap). The underlying data is
+ correct — this is display only.
+
+---
+
+## How it works
+
+- **Hosting is a two-byte patch.** `UEngine::LoadMap` checks whether the map URL
+ contains `listen` and skips `UWorld::Listen` if not. Replacing that conditional
+ jump with two `NOP`s makes the game call its own listen-server setup, with its
+ own world and its own URL, at exactly the right point of its own mission
+ startup. Forcing the map from outside instead (the first approach tried) breaks
+ the mission sequence and was abandoned.
+- **The mod almost never substitutes values.** When something is wrong, the fix
+ is to run the game's own function again once its inputs are ready. Both working
+ fixes are of that shape. Substituting a number is treated as *proof of cause*,
+ not as a repair.
+- **The game has no inventory replication at all.** `DimensionInventoryComponent`
+ has 50 functions and zero RPCs; of 203 RPCs in the whole game, none draws a
+ weapon. The authors knew how to replicate — `Actor`, `Character` and
+ `DimensionWeapon` have replicated properties — they simply did not replicate
+ this subsystem, because in a single-player game there was no reason to.
+- **The same is true of the player state machine**: 47 functions, zero RPCs.
+ Sprinting and sliding are states of that machine, driven by input — and the
+ server has no input component for a remote player. That is why sprint desyncs
+ while dash does not: dash is an *ability*, and abilities replicate.
+- **Analysis runs offline.** Questions about the game's code are answered from an
+ image of the executable, without a running game: disassembly, cross-references,
+ string literals and function bounds all come from that image. The repository
+ ships neither such an image nor any tool for producing one — `tools/obraz.py`
+ reads an image the user supplies.
+
+---
+
+## Requirements
+
+- **Every player needs their own, legally purchased copy of Witchfire.** This mod
+ is not a way for two people to play from one copy, and it is not meant to be
+ used that way.
+- Linux with Proton, or Windows.
+- Two instances of the game, each with its own prefix/save.
+- Built with mingw-w64 (`x86_64-w64-mingw32-g++`).
+
+This repository contains no game assets and no unreleased content — only source
+code, tools and notes written for this project. The single exception is a handful
+of short machine-code byte sequences quoted from the game in
+`src/proxy-dll/dllmain.cpp`; they are technically required to check and install
+the patches, they are **not** covered by this project's MIT licence, and the file
+says so at every place they appear.
+
+This is not an official multiplayer mode and never will be one. It is not
+affiliated with or endorsed by The Astronauts. Expect it to break.
+
+The code, comments and documentation are currently in Polish; a switch to English
+is planned.
+
+---
+
+## About the author, and about the AI — read this part
+
+The project is run by one person working alone, roughly ten hours
+a day and sometimes more, since **8 August 2026**. At the time of writing that is
+about four days. It is a short, very intense stretch of work, and it is described
+that way on purpose: nobody here is claiming months of effort.
+
+**The code and most of the reverse engineering were produced together with an AI
+model** (Claude, via Claude Code). That is not a footnote — it is most of the
+typing. The model writes the C++, reads the disassembly, forms hypotheses and
+keeps the documentation.
+
+What the human does is not decoration either, and the repository has the receipts:
+
+- **He runs the game, and only he can.** Nearly every finding here needed
+ someone actually playing — sprinting, sliding, reloading — while hooks recorded
+ what happened. Measurements taken without a real player produced silence that
+ looked exactly like a result and was not.
+- **He overturned the model's wrong conclusions, more than once.** The model
+ concluded that the client's data was fine and only the HUD was lying. The
+ player killed it with one sentence: *if it were only the display, the gun would
+ still fire.* He was right; the measurement then showed the ammunition was zero
+ on the server too.
+- **He proposed the measurement that cracked the movement bug**: *check how the
+ host's movement works, since he can move.* Comparing the two players inside one
+ process is what located the exact instruction where the paths diverge.
+- **He rejected fixes that were fakes.** A patch that returned a hard-coded speed
+ ceiling was thrown out on the grounds that it substitutes a number instead of
+ repairing a mechanism. That rule shaped the whole mod.
+
+And the honest other half: **the model has been wrong repeatedly, in ways that
+would have been shipped without a human checking.** It read one function as a
+clamp and then as a fill, changing its mind twice from disassembly alone. It
+guessed a byte value that turned out to be wrong, wrote in the notes that another
+byte pattern was "measured in the game's code" when it had actually read a
+synthetic code path, and twice wrote patches that crashed both game instances.
+The documentation in this repository records those corrections on purpose,
+because in this project the corrections were often worth more than the original
+conclusions.
+
+If you are looking for a project where the AI worked autonomously, this is not
+it. It is also not a project where the AI was a spell-checker. It is somewhere in
+the middle, and that is worth being precise about.
+
+Full list of contributors: [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
+## Support
+
+If you want to support the work: **https://ko-fi.com/mechhhh**
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+The license was chosen for one reason: **attribution**. If you distribute this
+project or something derived from it, section 4 requires you to keep the NOTICE
+file and pass its attribution along, so it stays visible that the work is based
+on this project. Beyond that you are free to use, modify and redistribute it,
+including commercially.
+
+Open source, and intended to stay that way.
+
+## Disclaimer
+
+This modifies a single-player game's memory in your own process to enable
+cooperative play. It is not a cheat for online games and is not designed for
+anything of the sort. Use at your own risk; you are responsible for how you use
+it.
