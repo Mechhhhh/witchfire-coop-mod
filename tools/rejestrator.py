@@ -48,6 +48,16 @@ SWIAT_CZAS      = 0x5A0
 
 KLASA_POSTACI = "BPDimensionPlayerCharacter_C"
 KLASA_KOMP    = "DimensionMovementComponent"
+CHAR_ASC      = 0x528          # DimensionAbilitySystemComponent postaci
+ASC_ATTRSETS  = 0x140          # TArray<UAttributeSet*> SpawnedAttributes
+FP_OFFSET     = 0x4C           # FProperty::Offset_Internal
+
+# Atrybuty staminy — nazwy z rejestracji refleksji (WIEDZA §3h). Offsety w
+# zestawie NIE sa stale i nie da sie ich wziac ze zrzutu: gra siega po nie przez
+# `FindProperty` po nazwie. Rozwiazujemy je RAZ, na starcie, i potem czytamy
+# surowe floaty — inaczej kazda probka kosztowalaby przejscie lancucha klas.
+ATRYBUTY = ["Stamina", "StaminaRegenSpeed", "ActualStaminaRegenSpeed",
+            "StaminaMovementModifier"]
 
 
 def dlugosc3(p, adres):
@@ -63,6 +73,76 @@ class Gracz:
         self.pionek, self.komp, self.kto = pionek, komp, kto
         self.maszyna = 0
         self.warunki = []          # [(nazwa, offset_wpisu)]
+        self.atrybuty = []         # [(nazwa, adres_CurrentValue)]
+
+
+def znajdz_proces(czysty=False):
+    """PID gry. `czysty` = instancja SPOZA naszych prefiksow, czyli niemodowana.
+
+    Wzorca szukamy wlasnie tam: dopoki mierzymy tylko wlasne instancje, nie
+    wiemy, ktora dziwna wartosc jest skutkiem moda, a ktora normalnym stanem gry.
+    """
+    import glob
+    wyniki = []
+    for sc in glob.glob("/proc/[0-9]*/comm"):
+        try:
+            if open(sc).read().strip() != "Witchfire-Win64":
+                continue
+            pid = int(sc.split("/")[2])
+            env = open(f"/proc/{pid}/environ", "rb").read().decode("utf8", "replace")
+            nasz = "witchfire-mp/compat" in env
+            if czysty != nasz:
+                wyniki.append(pid)
+        except Exception:
+            continue
+    return wyniki[0] if wyniki else None
+
+
+def przygotuj_atrybuty(p, g):
+    """Adresy `CurrentValue` atrybutow staminy — rozwiazane raz, po nazwie."""
+    g.atrybuty = []
+    asc = p.wskaznik(g.pionek + CHAR_ASC)
+    if not asc:
+        return
+    tab = p.wskaznik(asc + ASC_ATTRSETS)
+    n = p.u32(asc + ASC_ATTRSETS + 8) or 0
+    if not tab or not (0 < n <= 32):
+        return
+    try:
+        import importlib.util, os
+        sciezka = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ue-props.py")
+        spec = importlib.util.spec_from_file_location("ue_props", sciezka)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        refl = mod.Refleksja(p)
+    except Exception:
+        return
+    for i in range(n):
+        zestaw = p.u64(tab + i * 8)
+        if not zestaw:
+            continue
+        klasa = p.wskaznik(zestaw + UOBJ_CLASS_OFF)
+        if not klasa:
+            continue
+        for nz in ATRYBUTY:
+            if any(a[0] == nz for a in g.atrybuty):
+                continue
+            pole = refl.znajdz_pole(klasa, nz)
+            if not pole:
+                continue
+            off = p.i32(pole + FP_OFFSET)
+            if not off or not (0 < off < 0x4000):
+                continue
+            # TYP, nie zgadywanie. Czesc atrybutow to `FGameplayAttributeData`
+            # (8 B: BaseValue, CurrentValue), a czesc ZWYKLE floaty (4 B).
+            # Doliczanie `+4` wszystkim przesuwalo etykiety o jedno pole:
+            # `StaminaMovementModifier` lezy 4 bajty za `ActualStaminaRegenSpeed`,
+            # wiec „CurrentValue" pierwszego bylo w rzeczywistosci drugim.
+            # Wylapane przez porownanie z `stan-gracza.py` — bez tego caly
+            # wzorzec mialby zle nazwy kolumn i nikt by tego nie zauwazyl.
+            t = refl.typ(pole)
+            przesun = 4 if t == "StructProperty" else 0
+            g.atrybuty.append((nz, zestaw + off + przesun))
 
 
 def znajdz_graczy(p):
@@ -114,6 +194,7 @@ def czyj(p, pionek):
 
 
 def przygotuj(p, g):
+    przygotuj_atrybuty(p, g)
     g.maszyna = p.wskaznik(g.pionek + CHAR_MASZYNA) or 0
     g.warunki = []
     if not g.maszyna:
@@ -141,6 +222,9 @@ def wiersz(p, g, t):
             zegar = struct.unpack("<f", cb)[0]
     stan = p.u32(g.maszyna + SM_STAN) if g.maszyna else -1
     war = [str(p.u32(off) if p.u32(off) is not None else -1) for _n, off in g.warunki]
+    for _nz, adr in g.atrybuty:
+        b = p.czytaj(adr, 4)
+        war.append(f"{struct.unpack('<f', b)[0]:.2f}" if b else "-1")
     return "\t".join([f"{t:.1f}", g.kto, str(tryb[0]),
                       f"{dlugosc3(p, g.komp + COMP_PRZYSP):.0f}",
                       f"{dlugosc3(p, g.komp + COMP_PREDKOSC):.0f}",
@@ -176,7 +260,16 @@ def podsumuj(sciezka):
         except ValueError:
             pass
         for i, nz in enumerate(naglowek[9:], start=9):
-            if i < len(c) and c[i] == "1":
+            if i >= len(c):
+                continue
+            if "." in c[i]:                      # atrybut liczbowy, nie warunek 0/1
+                w = s.setdefault("atr", {}).setdefault(nz, [1e30, -1e30, None])
+                try:
+                    v = float(c[i])
+                except ValueError:
+                    continue
+                w[0] = min(w[0], v); w[1] = max(w[1], v); w[2] = v
+            elif c[i] == "1":
                 s["war"][nz] = s["war"].get(nz, 0) + 1
 
     print(f"probek: {wiersze}\n")
@@ -196,12 +289,16 @@ def podsumuj(sciezka):
             print(f"      {nz:<48} {100*v/s['n']:5.1f}%")
         if not s["war"]:
             print("      (zaden ani razu)")
+        if s.get("atr"):
+            print("   atrybuty (min / maks / ostatni):")
+            for nz, (lo, hi, ost) in sorted(s["atr"].items()):
+                print(f"      {nz:<48} {lo:8.2f} {hi:8.2f} {ost if ost is None else f'{ost:8.2f}'}")
         print()
 
 
 def main():
     a = argparse.ArgumentParser()
-    a.add_argument("pid", nargs="?")
+    a.add_argument("pid", nargs="?", help="PID gry albo `auto` / `wzorzec`")
     a.add_argument("plik", nargs="?")
     a.add_argument("minuty", nargs="?", type=float, default=120.0)
     a.add_argument("--hz", type=float, default=2.0)
@@ -224,7 +321,16 @@ def main():
     if not x.pid or not x.plik:
         print(__doc__); return 2
 
-    pid = int(x.pid)
+    if x.pid in ("wzorzec", "auto"):
+        pid = znajdz_proces(czysty=(x.pid == "wzorzec"))
+        if not pid:
+            print("nie znalazlem " + ("CZYSTEJ (niemodowanej)" if x.pid == "wzorzec"
+                  else "zadnej") + " instancji Witchfire", file=sys.stderr)
+            return 1
+        print(f"znaleziona instancja: pid {pid}"
+              + ("  (czysta, spoza naszych prefiksow)" if x.pid == "wzorzec" else ""))
+    else:
+        pid = int(x.pid)
     # Bufor stron WYLACZONY: probkujemy wartosci, ktore sie zmieniaja.
     p = Pamiec(pid, buforuj=False)
 
@@ -238,7 +344,8 @@ def main():
 
     wzor = max(gracze, key=lambda g: len(g.warunki))
     naglowek = ["czas", "kto", "tryb", "przysp", "predk", "znacznik", "zegar",
-                "wiek", "stan"] + [n for n, _ in wzor.warunki]
+                "wiek", "stan"] + [n for n, _ in wzor.warunki] \
+               + [n for n, _ in wzor.atrybuty]
 
     f = open(x.plik, "w", buffering=1)
     f.write(f"# rejestrator, pid={pid}, {len(gracze)} graczy, {x.hz} Hz\n")
