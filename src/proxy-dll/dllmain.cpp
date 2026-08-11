@@ -3164,6 +3164,79 @@ static void odswiezZnacznikRuchu(void* comp)
                 (int)*(const int32_t*)(sm + addr::SM_CURRENT_IDX), ile);
 }
 
+// ── TRYB RUCHU: dlaczego serwer trzyma pionek zdalny w SPADANIU ─────────────
+//
+// Pomiar 23:57 zamknal sprawe `HasMovementInput` i od razu otworzyl nastepna:
+// `IdleToWalking` wymaga TAKZE `IsOnGround`, a ten jest u klienta zerem.
+// Zrodlo tego zera jest zmierzone i jednoznaczne:
+//
+//     MovementMode (komponent+0x168):  KLIENT = 3 (spadanie),  HOST = 1 (chodzenie)
+//
+// Bo `IsOnGround` gra liczy tak (0x141809E44–0x141809E65):
+//     call [pionek_vt+0x638]   -> komponent ruchu
+//     call [komponent_vt+0x570] -> IsMovingOnGround()  ==  MovementMode in {Walking, NavWalking}
+//
+// Dalsze sledzenie po zrzucie robilo sie domyslne, wiec pytamy gry. Dwa
+// gniazda, obie funkcje wirtualne, obie o SYGNATURZE POTWIERDZONEJ — z prologu
+// funkcji ORAZ z dwudziestu miejsc wywolania (zasada 1):
+//
+//   gniazdo 182 (+0x5B0)  SetMovementMode(this, int tryb, uint8 wlasny)  0x1436E7210
+//   gniazdo 241 (+0x788)  SetPostLandedPhysics(this, const FHitResult&)  0x1436E75B0
+//
+// Numery gniazd wyliczone z tablicy metod `DimensionMovementComponent`
+// (baza 0x14506F2C0, sprawdzona na DWOCH znanych gniazdach: `GetMaxSpeed`
+// 130 -> 0x14506F6D0 i `GetMaxAcceleration` 223 -> 0x14506F9B8).
+//
+// Zakladamy je TA SAMA droga co `GetMaxSpeed` — podmiana gniazda w tablicy
+// metod wzorca klasy. To mechanizm, ktory w tym projekcie dziala od tygodnia;
+// zadnego splice'u bajtow, zadnego asemblera.
+//
+// Co ma rozstrzygnac: czy serwer w ogole PROBUJE wyladowac pionek klienta.
+//   - brak wierszy `TRYB: ladowanie` dla KLIENTA, a sa dla HOSTA
+//         -> `ProcessLanded` nie dochodzi, czyli fizyka spadania nie znajduje podlogi,
+//   - sa, ale zaraz po nich wraca `-> 3`
+//         -> cos wypycha pionek z powrotem w spadanie; adres powrotu powie co.
+namespace addr {
+constexpr int SLOT_SET_MOVEMENT_MODE = 182;   // 0x5B0
+constexpr int SLOT_POST_LANDED       = 241;   // 0x788
+}
+
+using SetTrybFn   = void(__fastcall*)(void*, int, unsigned char);
+using PostLandFn  = void(__fastcall*)(void*, void*);
+
+static SetTrybFn     g_origSetTryb   = nullptr;
+static PostLandFn    g_origPostLand  = nullptr;
+static bool          g_logTryb       = false;
+
+static void __fastcall thunkSetTryb(void* comp, int tryb, unsigned char wlasny)
+{
+    if (g_logTryb && g_bazaModulu && sensownyWsk((uintptr_t)comp)) {
+        const uintptr_t c = (uintptr_t)comp;
+        const int stary = *(const unsigned char*)(c + 0x168);
+        if (stary != tryb) {                       // tylko ZMIANY, nie co klatke
+            static volatile LONG ile = 0;
+            if (InterlockedIncrement(&ile) <= 40)
+                logLine("TRYB: %s  %d -> %d (wlasny %u)  wolal 0x%llX",
+                        czyjKomponent(g_bazaModulu, c), stary, tryb, (unsigned)wlasny,
+                        (unsigned long long)(uintptr_t)__builtin_return_address(0));
+        }
+    }
+    if (g_origSetTryb) g_origSetTryb(comp, tryb, wlasny);
+}
+
+static void __fastcall thunkPostLand(void* comp, void* hit)
+{
+    if (g_logTryb && g_bazaModulu && sensownyWsk((uintptr_t)comp)) {
+        static volatile LONG ile = 0;
+        if (InterlockedIncrement(&ile) <= 40)
+            logLine("TRYB: ladowanie dla %s  (tryb przed = %d)  wolal 0x%llX",
+                    czyjKomponent(g_bazaModulu, (uintptr_t)comp),
+                    (int)*(const unsigned char*)((uintptr_t)comp + 0x168),
+                    (unsigned long long)(uintptr_t)__builtin_return_address(0));
+    }
+    if (g_origPostLand) g_origPostLand(comp, hit);
+}
+
 static float __fastcall thunkMaxSpeed(void* comp)
 {
     // Dowod, ze hak zyje (zasada 14): bez tego cisza w logu znaczylaby naraz
@@ -3267,6 +3340,40 @@ static bool patchRemoteMovement(uintptr_t base)
     g_origMaxAccel = vt[addr::SLOT_GET_MAX_ACCEL];
     vt[addr::SLOT_GET_MAX_ACCEL] = &thunkMaxAccel;
     VirtualProtect(obszar, 8, stare, &stare);
+
+    // Gniazda trybu ruchu — osobno i tylko przy markerze, zeby przebieg bez
+    // `log_tryb` byl dokladnie taki jak dotychczasowe (zasada 9).
+    // Sprawdzamy PRZED podmiana, czy w gniezdzie stoi spodziewana funkcja gry:
+    // zly numer gniazda podmienilby losowa metode i wywalil gre bez sladu.
+    if (g_logTryb) {
+        struct { int gniazdo; uintptr_t oczekiwany; void* nasz; void** oryginal;
+                 const char* nazwa; } pary[] = {
+            { addr::SLOT_SET_MOVEMENT_MODE, 0x1436E7210, (void*)&thunkSetTryb,
+              (void**)&g_origSetTryb,  "SetMovementMode" },
+            { addr::SLOT_POST_LANDED,       0x1436E75B0, (void*)&thunkPostLand,
+              (void**)&g_origPostLand, "SetPostLandedPhysics" },
+        };
+        for (auto& p : pary) {
+            void* stoi = (void*)vt[p.gniazdo];
+            const uintptr_t spodziewany = base + (p.oczekiwany - 0x140000000ull);
+            if ((uintptr_t)stoi != spodziewany) {
+                logLine("TRYB: gniazdo %d ma 0x%llX, a spodziewalem sie 0x%llX (%s) "
+                        "— NIE podmieniam", p.gniazdo,
+                        (unsigned long long)(uintptr_t)stoi,
+                        (unsigned long long)spodziewany, p.nazwa);
+                continue;
+            }
+            obszar = (void*)&vt[p.gniazdo];
+            if (!VirtualProtect(obszar, 8, PAGE_READWRITE, &stare)) {
+                logLine("TRYB: VirtualProtect (%s) nieudany", p.nazwa); continue;
+            }
+            *p.oryginal = stoi;
+            vt[p.gniazdo] = (FloatFn)p.nasz;
+            VirtualProtect(obszar, 8, stare, &stare);
+            logLine("TRYB: gniazdo %d (%s) podmienione, oryginal 0x%llX",
+                    p.gniazdo, p.nazwa, (unsigned long long)(uintptr_t)stoi);
+        }
+    }
 
     logLine("RUCH: latka zdalnego ruchu zalozona (tablica metod 0x%llX, "
             "oryginaly: predkosc 0x%llX, przyspieszenie 0x%llX)",
@@ -4062,7 +4169,7 @@ static DWORD WINAPI heartbeat(LPVOID)
         // Przejsciowki limitow ruchu — zakladane tutaj z tego samego powodu co
         // liczniki: potrzebuja gotowej tablicy obiektow. Sluza do pomiaru
         // (`log_speed`) i do naprawy mapy atrybutow (`fix_attrs`).
-        if (g_logSpeed || g_fixAttrsWlaczony || g_fixCzasWlaczony) {
+        if (g_logSpeed || g_fixAttrsWlaczony || g_fixCzasWlaczony || g_logTryb) {
             static bool zalozona = false;
             if (!zalozona && g_bazaModulu && w) {
                 zalozona = patchRemoteMovement(g_bazaModulu);
@@ -4264,6 +4371,20 @@ static DWORD WINAPI worker(LPVOID)
             logLine("NAPELNIANIE: marker WFCoop_fix_dup.txt — bede pomijal powtorne napelnianie");
         } else {
             logLine("NAPELNIANIE: brak markera WFCoop_fix_dup.txt — nie latam duplikatu");
+        }
+    }
+
+    // Tryb ruchu pionka zdalnego — patrz `thunkSetTryb`. Czysto diagnostyczne:
+    // nie zmienia niczego, tylko melduje kazda ZMIANE trybu i kazda probe
+    // ladowania, razem z adresem powrotu wolajacego.
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_log_tryb.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_logTryb = true;
+            logLine("TRYB: marker WFCoop_log_tryb.txt — bede logowal zmiany trybu ruchu");
+        } else {
+            logLine("TRYB: brak markera WFCoop_log_tryb.txt — nie loguje");
         }
     }
 

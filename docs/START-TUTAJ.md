@@ -76,9 +76,13 @@ katalogu gry i porównuje sumy — gra musi być zamknięta).
 
 ## NASTĘPNY KROK — jedna przeszkoda, zmierzona i nazwana
 
-Stan na 12.08, 00:1x. Biblioteka wdrożona (`md5=4287a6ae`), gry **zamknięte**
-(host padł 23:58, patrz niżej). Marker `fix_czas` **leży u hosta**;
+Stan na 12.08, 00:4x. Biblioteka wdrożona (`md5=6266c439`), gry **zamknięte**.
+Markery u hosta: `fix_czas` (zostaje — działa) **+ nowy `log_tryb`**.
 `fix_ammo` dalej zdjęty po obu stronach.
+
+**Przebieg jest przygotowany i czeka na jedno kliknięcie.** Wystarczy wejść na
+wyprawę — klienta dołączy `dozorca` (patrz „Jak to teraz działa"), a log
+odpowie na pytanie hipotezy 23 bez dalszej interakcji.
 
 ### 1. Sprint — `fix_czas` DZIAŁA; blokuje następny warunek
 
@@ -105,10 +109,25 @@ warunków, więc maszyna dalej stoi w `Idle` — i gracz dalej jest cofany.
 (`[vt+0x638]` → `[vt+0x570]`, `0x141809E44`–`0x141809E65`), a to w UE znaczy
 po prostu `MovementMode ∈ {Walking, NavWalking}`.
 
-**Do zrobienia:** znaleźć, co po stronie serwera trzyma pionek zdalny
-w `Falling`. To hipoteza 23 w `DZIENNIK.md`. Robota jest **statyczna** —
-`tools/pole.py 0x168` pokaże wszystkich zapisujących `MovementMode`,
-a `tools/warunki.py` i `obraz.py` resztę. Gra do tego niepotrzebna.
+**Zrobione statycznie — droga rozebrana do gniazd tablicy metod:**
+
+| co | gdzie |
+|---|---|
+| tablica metod `DimensionMovementComponent` | `0x14506F2C0` (sprawdzona na dwóch znanych gniazdach: 130 i 223) |
+| `SetMovementMode(this, tryb, własny)` | `0x1436E7210`, **gniazdo 182** (`+0x5B0`) |
+| `SetPostLandedPhysics(this, hit)` | `0x1436E75B0`, **gniazdo 241** (`+0x788`), ustawia tryb z `GroundMovementMode` (`+0x387`) |
+| kto ustawia `Falling` | dziewięć miejsc w `0x1436Cxxxx`–`0x1436Exxxx`, wszystkie z `mov edx, 3` |
+
+**Do zrobienia — jeden przebieg, marker `log_tryb` już leży.** Diagnostyka
+podmienia oba gniazda tą samą drogą co `GetMaxSpeed` (żadnego splice'u bajtów)
+i sprawdza przed podmianą, czy w gnieździe stoi spodziewana funkcja gry.
+Co znaczy który wynik:
+
+| co w logu | znaczenie |
+|---|---|
+| `TRYB: ladowanie` dla HOSTA, **brak** dla KLIENTA | `ProcessLanded` nie dochodzi — fizyka spadania nie znajduje podłogi pod pionkiem zdalnym |
+| `ladowanie` jest, ale zaraz potem `-> 3` | coś wypycha pionek z powrotem w spadanie; **adres powrotu w logu powie co** |
+| `gniazdo … ma 0x…, a spodziewalem sie 0x…` | numer gniazda nie ten — nic nie podmieniono, gra bezpieczna |
 
 ### 2. Amunicja — gracz dał mocny dowód
 
