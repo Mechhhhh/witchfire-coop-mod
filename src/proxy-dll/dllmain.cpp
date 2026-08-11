@@ -796,6 +796,241 @@ constexpr uintptr_t BoosterNullCheck_OFF = 0x19CA7D4;   // lea rdx,[rsp+0x20]
 constexpr uintptr_t BoosterEpilog_OFF    = 0x19CA8FD;   // add rsp,0x30; ...; ret
 }
 
+// ── SCIANA #3: rozgloszenie do WISZACEGO sluchacza przy dolaczeniu klienta ──
+//
+// Objaw (gracz): „czasami sie powtarza, kiedy klient dolacza w trakcie".
+// Zmierzone 12.08 00:37:52 — host padl 4 sekundy po tym, jak pionek klienta
+// dostal tryb ruchu, czyli dokladnie w chwili dolaczania:
+//
+//   EXCEPTION_ACCESS_VIOLATION reading address 0x12
+//   #0 0x1419E7BA1  #1 0x1419EEA59 (w 0x1419EE860 — rozgloszenie po magazynach)
+//
+// Miejsce awarii, instrukcja po instrukcji (funkcja 0x1419E7B40):
+//
+//   lea  r14,[rcx+0x360]     ; sekcja krytyczna
+//   mov  rbx,[rdi+0x240]     ; tablica sluchaczy, licznik w +0x248
+//   petla:
+//     mov  rcx,[rbx]         ; element
+//     test rcx,rcx / je      ; gra sprawdza NULL...
+//     mov  rax,[rcx]         ; ...ale nie sprawdza, czy wskaznik JESZCZE ZYJE
+//     call [rax+0x10]        ; <- AWARIA: rax=2, wiec czyta spod 0x12
+//
+// Czyli element nie byl nullem, tylko WISZACY — po obiekcie, ktory juz nie
+// istnieje. To ta sama rodzina co sciana #1 i #2 (WIEDZA §4): kod pisany dla
+// jednego gracza zaklada, ze nikt sie nie wyrejestrowuje.
+//
+// Nie podrabiamy mechaniki: gra MA tu wlasnego straznika i sama pomija wpisy,
+// ktorych nie da sie zawolac — tylko jej warunek jest za waski. Rozszerzamy
+// go o to, co zawiodlo, i wychodzimy DOKLADNIE ta sama droga, ktorej uzywa
+// jej wlasne pominiecie (skok na `add rbx,8`).
+//
+// Uklad trampoliny zlozony i ZDEASEMBLOWANY KONTROLNIE przed wpisaniem tutaj
+// (cztery skoki musza ladowac w pominieciu, dwa adresy i offset licznika sie
+// zgadzac). Komentarz przy `patchBoosterNullGuard` mowi, czemu: pierwsza taka
+// trampolina w tym projekcie miala trzy bledy naraz.
+namespace addr {
+constexpr uintptr_t ListaSluchaczy_OFF = 0x19E7B98;   // `mov rax,[rcx]` w petli
+}
+static bool          g_fixListaWlaczony = false;
+static volatile unsigned* g_listaLicznik = nullptr;
+
+static bool patchDanglingListenerGuard(uintptr_t base)
+{
+    auto* fn = reinterpret_cast<unsigned char*>(base + addr::ListaSluchaczy_OFF);
+    static const unsigned char oczekiwane[] = {
+        0x48, 0x8B, 0x01,               // mov rax,[rcx]
+        0x4C, 0x8B, 0xC6,               // mov r8,rsi
+        0x48, 0x8B, 0xD5,               // mov rdx,rbp
+        0xFF, 0x50, 0x10                // call [rax+0x10]
+    };
+    if (memcmp(fn, oczekiwane, sizeof oczekiwane) != 0) {
+        logLine("LISTA: bajty pod 0x%llX inne niz oczekiwane — NIE latam",
+                (unsigned long long)(uintptr_t)fn);
+        return false;
+    }
+
+    unsigned char* tr = nullptr;
+    for (uintptr_t a = base + 0x08000000; a < base + 0x40000000; a += 0x10000) {
+        tr = (unsigned char*)VirtualAlloc((void*)a, 0x1000,
+                                          MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (tr) break;
+    }
+    if (!tr) { logLine("LISTA: brak miejsca na trampoline"); return false; }
+
+    //   +0x00 mov rax,[rcx]        oryginal
+    //   +0x03 test rax,rax
+    //   +0x06 jz  -> +0x2E
+    //   +0x08 test al,7            tablica metod musi byc wyrownana do 8
+    //   +0x0A jnz -> +0x2E
+    //   +0x0C mov r11,rax          r11 jest ulotny i tak zginie w `call`
+    //   +0x0F shr r11,47           gorne bity musza byc zerem (przestrzen uzytkownika)
+    //   +0x13 jnz -> +0x2E
+    //   +0x15 cmp rax,0x10000
+    //   +0x1B jb  -> +0x2E
+    //   +0x1D mov r8,rsi           oryginal
+    //   +0x20 jmp [rip+0] -> +0x26
+    //   +0x26 <adres powrotu 8 B>  = 0x1419E7B9E (`mov rdx,rbp`)
+    //   +0x2E inc [rip+0xE] -> +0x42
+    //   +0x34 jmp [rip+0] -> +0x3A
+    //   +0x3A <adres pominiecia 8 B> = 0x1419E7BA4 (`add rbx,8`)
+    //   +0x42 <licznik 4 B>
+    enum { OFF_POWROT = 0x26, OFF_POMIN = 0x2E, OFF_ADRPOMIN = 0x3A, OFF_LICZNIK = 0x42 };
+    unsigned char code[] = {
+        0x48, 0x8B, 0x01,                       // mov rax,[rcx]        (oryginal)
+        0x48, 0x85, 0xC0,                       // test rax,rax
+        0x74, 0x26,                             // jz  -> +0x2E
+        0xA8, 0x07,                             // test al,7
+        0x75, 0x22,                             // jnz -> +0x2E
+        0x49, 0x89, 0xC3,                       // mov r11,rax
+        0x49, 0xC1, 0xEB, 0x2F,                 // shr r11,47
+        0x75, 0x19,                             // jnz -> +0x2E
+        0x48, 0x3D, 0x00, 0x00, 0x01, 0x00,     // cmp rax,0x10000
+        0x72, 0x11,                             // jb  -> +0x2E
+        0x4C, 0x8B, 0xC6,                       // mov r8,rsi           (oryginal)
+        0xFF, 0x25, 0x00,0x00,0x00,0x00,        // jmp [rip+0] -> powrot
+        0,0,0,0,0,0,0,0,                        // +0x26 adres powrotu
+        0xFF, 0x05, 0x0E,0x00,0x00,0x00,        // inc dword [rip+0xE] -> licznik
+        0xFF, 0x25, 0x00,0x00,0x00,0x00,        // jmp [rip+0] -> pominiecie
+        0,0,0,0,0,0,0,0,                        // +0x3A adres pominiecia
+        0,0,0,0                                 // +0x42 licznik
+    };
+    if (sizeof(code) != OFF_LICZNIK + 4) {
+        logLine("LISTA: BLAD WEWNETRZNY — trampolina %zu B, oczekiwano %d",
+                sizeof(code), OFF_LICZNIK + 4);
+        return false;
+    }
+    *(uintptr_t*)(code + OFF_POWROT)   = base + addr::ListaSluchaczy_OFF + 6;
+    *(uintptr_t*)(code + OFF_ADRPOMIN) = base + addr::ListaSluchaczy_OFF + 12;
+    memcpy(tr, code, sizeof code);
+    g_listaLicznik = (volatile unsigned*)(tr + OFF_LICZNIK);
+
+    // Skok w miejsce SZESCIU ukradzionych bajtow (`mov rax,[rcx]` + `mov r8,rsi`);
+    // szosty domykamy NOP-em, zeby nie zostal ogon poprzedniej instrukcji.
+    DWORD stare = 0;
+    if (!VirtualProtect(fn, 6, PAGE_EXECUTE_READWRITE, &stare)) {
+        logLine("LISTA: VirtualProtect nieudany"); return false;
+    }
+    const int32_t rel = (int32_t)((uintptr_t)tr - ((uintptr_t)fn + 5));
+    fn[0] = 0xE9;
+    memcpy(fn + 1, &rel, 4);
+    fn[5] = 0x90;
+    VirtualProtect(fn, 6, stare, &stare);
+    FlushInstructionCache(GetCurrentProcess(), fn, 6);
+
+    logLine("LISTA: straznik wiszacego sluchacza zalozony (0x%llX -> trampolina 0x%llX)",
+            (unsigned long long)(uintptr_t)fn, (unsigned long long)(uintptr_t)tr);
+    return true;
+}
+
+// ── SCIANA #4: nullowy `this` w petli po przedmiotach ekwipunku ─────────────
+//
+// Druga z dwoch zywych sygnatur (uszeregowanie 12.08: trzy dawne rodziny
+// wygasly 9–10.08, zostaly `0x148` i `0x12`). Ta jest `0x148`, z 11.08 23:58,
+// w tym samym przebiegu, w ktorym bron klienta przeladowywala sie w kolko.
+//
+//   #0 0x141A01C6B  movsxd rax,[rcx+0x148]   <- rcx = NULL
+//   #4 0x1418D30B0  petla po broniach w ekwipunku
+//
+// Wolajacy (0x1417A9190) robi to bez zadnego sprawdzenia:
+//
+//   mov  rcx,r12
+//   call 0x1418C3960        ; ta funkcja MA TRZY sciezki zwracajace NULL
+//   mov  rcx,rax            ; <- brak sprawdzenia
+//   call 0x141A01C40        ; <- awaria w srodku, bo `this` jest nullem
+//   test al,al
+//   je   0x1417A944F        ; <- a TU gra ma wlasna obsluge „nie wyszlo"
+//
+// I to jest cale rozwiazanie: `0x1417A944F` to `inc rdi; cmp rdi,r14; jne`,
+// czyli KONTYNUACJA PETLI. Gra sama tam skacze, gdy wywolanie zwroci falsz.
+// Wiec przy nullu pomijamy przedmiot i lecimy dalej — jej wlasna droga, jej
+// wlasna semantyka. Nie podstawiamy zadnej wartosci.
+//
+// Sprawdzone, ze `0x1418C3960` faktycznie zwraca null: `0x1418C399B` to
+// `xor eax,eax; add rsp,0x20; pop rbx; ret`, i prowadza do niego trzy skoki.
+//
+// Bajty zlozone w Pythonie i zdeasemblowane kontrolnie przed wpisaniem tutaj.
+namespace addr {
+constexpr uintptr_t PetlaEkwipunku_OFF = 0x17A937A;   // `mov rcx,rax` po wywolaniu
+}
+static bool          g_fixNullThisWlaczony = false;
+static volatile unsigned* g_nullThisLicznik = nullptr;
+
+static bool patchNullThisGuard(uintptr_t base)
+{
+    auto* fn = reinterpret_cast<unsigned char*>(base + addr::PetlaEkwipunku_OFF);
+    static const unsigned char oczekiwane[] = {
+        0x48, 0x8B, 0xC8,               // mov rcx,rax
+        0x4C, 0x8D, 0x45, 0x77,         // lea r8,[rbp+0x77]
+        0x45, 0x33, 0xC9,               // xor r9d,r9d
+        0x48, 0x8D, 0x55, 0xD7          // lea rdx,[rbp-0x29]
+    };
+    if (memcmp(fn, oczekiwane, sizeof oczekiwane) != 0) {
+        logLine("EKWIPUNEK: bajty pod 0x%llX inne niz oczekiwane — NIE latam",
+                (unsigned long long)(uintptr_t)fn);
+        return false;
+    }
+
+    unsigned char* tr = nullptr;
+    for (uintptr_t a = base + 0x08000000; a < base + 0x40000000; a += 0x10000) {
+        tr = (unsigned char*)VirtualAlloc((void*)a, 0x1000,
+                                          MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (tr) break;
+    }
+    if (!tr) { logLine("EKWIPUNEK: brak miejsca na trampoline"); return false; }
+
+    //   +0x00 test rax,rax
+    //   +0x03 jz  -> +0x1A
+    //   +0x05 mov rcx,rax          oryginal
+    //   +0x08 lea r8,[rbp+0x77]    oryginal
+    //   +0x0C jmp [rip+0] -> +0x12
+    //   +0x12 <powrot 8 B>  = 0x1417A9381 (`xor r9d,r9d`)
+    //   +0x1A inc [rip+0xE] -> +0x2E
+    //   +0x20 jmp [rip+0] -> +0x26
+    //   +0x26 <pominiecie 8 B> = 0x1417A944F (kontynuacja petli)
+    //   +0x2E <licznik 4 B>
+    enum { OFF_POWROT = 0x12, OFF_SKIP = 0x1A, OFF_ADRPOMIN = 0x26, OFF_LICZNIK = 0x2E };
+    unsigned char code[] = {
+        0x48, 0x85, 0xC0,                    // test rax,rax
+        0x74, 0x15,                          // jz -> +0x1A
+        0x48, 0x8B, 0xC8,                    // mov rcx,rax          (oryginal)
+        0x4C, 0x8D, 0x45, 0x77,              // lea r8,[rbp+0x77]    (oryginal)
+        0xFF, 0x25, 0x00,0x00,0x00,0x00,     // jmp [rip+0] -> powrot
+        0,0,0,0,0,0,0,0,                     // +0x12 adres powrotu
+        0xFF, 0x05, 0x0E,0x00,0x00,0x00,     // inc dword [rip+0xE] -> licznik
+        0xFF, 0x25, 0x00,0x00,0x00,0x00,     // jmp [rip+0] -> pominiecie
+        0,0,0,0,0,0,0,0,                     // +0x26 adres pominiecia
+        0,0,0,0                              // +0x2E licznik
+    };
+    if (sizeof(code) != OFF_LICZNIK + 4) {
+        logLine("EKWIPUNEK: BLAD WEWNETRZNY — trampolina %zu B, oczekiwano %d",
+                sizeof(code), OFF_LICZNIK + 4);
+        return false;
+    }
+    (void)OFF_SKIP;
+    *(uintptr_t*)(code + OFF_POWROT)   = base + addr::PetlaEkwipunku_OFF + 7;
+    *(uintptr_t*)(code + OFF_ADRPOMIN) = base + 0x17A944F;
+    memcpy(tr, code, sizeof code);
+    g_nullThisLicznik = (volatile unsigned*)(tr + OFF_LICZNIK);
+
+    // Siedem ukradzionych bajtow: `mov rcx,rax` (3) + `lea r8,[rbp+0x77]` (4).
+    // Skok ma piec, wiec dwa ostatnie domykamy NOP-ami.
+    DWORD stare = 0;
+    if (!VirtualProtect(fn, 7, PAGE_EXECUTE_READWRITE, &stare)) {
+        logLine("EKWIPUNEK: VirtualProtect nieudany"); return false;
+    }
+    const int32_t rel = (int32_t)((uintptr_t)tr - ((uintptr_t)fn + 5));
+    fn[0] = 0xE9;
+    memcpy(fn + 1, &rel, 4);
+    fn[5] = 0x90;
+    fn[6] = 0x90;
+    VirtualProtect(fn, 7, stare, &stare);
+    FlushInstructionCache(GetCurrentProcess(), fn, 7);
+
+    logLine("EKWIPUNEK: straznik nullowego `this` zalozony (0x%llX -> trampolina 0x%llX)",
+            (unsigned long long)(uintptr_t)fn, (unsigned long long)(uintptr_t)tr);
+    return true;
+}
+
 static bool patchBoosterNullGuard(uintptr_t base)
 {
     auto* fn = reinterpret_cast<unsigned char*>(base + addr::BoosterNullCheck_OFF);
@@ -3138,27 +3373,48 @@ static bool wolnoPisacZnacznik(uintptr_t base, void* comp, uintptr_t postac)
     return ocena == Ocena::Wolno;
 }
 
+// Liczniki KAZDEJ bramki, nie tylko sukcesu.
+//
+// Powod jest bledem, ktory sam popelnilem 11.08 o 23:54: log nie mial ani
+// jednego wiersza `CZAS:` i bylem o krok od napisania „wyzwalacz nie dziala".
+// Okno pomiaru bylo sprzed zjawiska — klient dopiero wstawal. Hak, ktory loguje
+// WYLACZNIE sukcesy, robi z ciszy zdanie dwuznaczne: nie odroznia „nie bylo
+// okazji" od „bramka odmowila". Te liczniki to rozstrzygaja bez zgadywania.
+static volatile LONG g_czasWolan   = 0;   // ile razy hak w ogole wszedl
+static volatile LONG g_czasBezRuchu = 0;  // przyspieszenie zerowe
+static volatile LONG g_czasNieWolno = 0;  // bramka `wolnoPisacZnacznik` odmowila
+static volatile LONG g_czasBrakDanych = 0;// brak maszyny, swiata albo zegara
+
 static void odswiezZnacznikRuchu(void* comp)
 {
     if (!g_fixCzasWlaczony || !g_bazaModulu) return;
     const uintptr_t c = (uintptr_t)comp;
+    InterlockedIncrement(&g_czasWolan);
 
     // Sygnal gry: czy klient TRZYMA wejscie ruchu. Zero przyspieszenia = nie
     // trzyma, i wtedy niczego nie stemplujemy — znacznik ma sie zestarzec sam,
     // dokladnie tak jak u gracza lokalnego, ktory puscil klawisz.
     const float* a = (const float*)(c + addr::COMP_PRZYSPIESZENIE);
-    if (!(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] > 1.0f)) return;
+    if (!(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] > 1.0f)) {
+        InterlockedIncrement(&g_czasBezRuchu); return;
+    }
 
     const uintptr_t postac = *(const uintptr_t*)(c + addr::COMP_POSTAC);
-    if (!sensownyWsk(postac)) return;
-    if (!wolnoPisacZnacznik(g_bazaModulu, comp, postac)) return;
+    if (!sensownyWsk(postac)) { InterlockedIncrement(&g_czasBrakDanych); return; }
+    if (!wolnoPisacZnacznik(g_bazaModulu, comp, postac)) {
+        InterlockedIncrement(&g_czasNieWolno); return;
+    }
 
     const uintptr_t sm = *(const uintptr_t*)(postac + addr::CHAR_STATE_MACHINE);
-    if (!sensownyWsk(sm)) return;
+    if (!sensownyWsk(sm)) { InterlockedIncrement(&g_czasBrakDanych); return; }
     const uintptr_t swiat = *(const uintptr_t*)(sm + addr::KOMP_SWIAT);
-    if (!sensownyWsk(swiat)) return;                 // gra jeszcze nie zbuforowala
+    if (!sensownyWsk(swiat)) {                       // gra jeszcze nie zbuforowala
+        InterlockedIncrement(&g_czasBrakDanych); return;
+    }
     const float zegar = *(const float*)(swiat + addr::SWIAT_CZAS);
-    if (!(zegar > 0.0f) || zegar > 1.0e7f) return;   // zegar musi byc sensowny
+    if (!(zegar > 0.0f) || zegar > 1.0e7f) {         // zegar musi byc sensowny
+        InterlockedIncrement(&g_czasBrakDanych); return;
+    }
 
     float* znacznik = (float*)(postac + addr::PIONEK_ZNACZNIK);
     const float przed = *znacznik;
@@ -4193,7 +4449,11 @@ static DWORD WINAPI heartbeat(LPVOID)
             if (zalozona && (ostatnioZnacznikow < 0
                              || g_znacznikowUstawionych - ostatnioZnacznikow >= 600)) {
                 ostatnioZnacznikow = g_znacznikowUstawionych;
-                logLine("CZAS: znacznikow ustawionych razem: %ld", ostatnioZnacznikow);
+                // Rozliczenie WSZYSTKICH bramek, zeby cisza znaczyla jedno.
+                logLine("CZAS: wywolan %ld = ostemplowanych %ld + bez ruchu %ld"
+                        " + nie wolno %ld + brak danych %ld",
+                        g_czasWolan, g_znacznikowUstawionych, g_czasBezRuchu,
+                        g_czasNieWolno, g_czasBrakDanych);
             }
             static LONG ostatnioSync = 0;
             if (zalozona && g_syncRazem != ostatnioSync) {
@@ -4218,6 +4478,22 @@ static DWORD WINAPI heartbeat(LPVOID)
                         ostatnie[n] = teraz;
                     }
                 }
+            }
+        }
+        if (g_nullThisLicznik) {
+            static unsigned ostatni = 0;
+            const unsigned teraz = *g_nullThisLicznik;
+            if (teraz != ostatni) {
+                logLine("EKWIPUNEK: pominietych nullowych przedmiotow: %u", teraz);
+                ostatni = teraz;
+            }
+        }
+        if (g_listaLicznik) {
+            static unsigned ostatni = 0;
+            const unsigned teraz = *g_listaLicznik;
+            if (teraz != ostatni) {
+                logLine("LISTA: pominietych wiszacych sluchaczy: %u", teraz);
+                ostatni = teraz;
             }
         }
         if (g_boosterLicznik) {
@@ -4382,6 +4658,30 @@ static DWORD WINAPI worker(LPVOID)
             logLine("NAPELNIANIE: marker WFCoop_fix_dup.txt — bede pomijal powtorne napelnianie");
         } else {
             logLine("NAPELNIANIE: brak markera WFCoop_fix_dup.txt — nie latam duplikatu");
+        }
+    }
+
+    // Sciana #4: nullowy `this` w petli po przedmiotach ekwipunku.
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_fix_ekwipunek.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_fixNullThisWlaczony = patchNullThisGuard(g_bazaModulu);
+        } else {
+            logLine("EKWIPUNEK: brak markera WFCoop_fix_ekwipunek.txt — nie latam");
+        }
+    }
+
+    // Sciana #3: straznik wiszacego sluchacza przy dolaczaniu klienta.
+    // Osobny marker, zeby dalo sie zrobic przebieg kontrolny — potwierdzamy
+    // przez USUNIECIE markera (awaria ma wtedy wrocic).
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_fix_lista.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_fixListaWlaczony = patchDanglingListenerGuard(g_bazaModulu);
+        } else {
+            logLine("LISTA: brak markera WFCoop_fix_lista.txt — nie latam");
         }
     }
 

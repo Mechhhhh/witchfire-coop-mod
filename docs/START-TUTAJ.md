@@ -36,7 +36,18 @@ objawów wynikających z pominiętej sekwencji startu misji **po stronie hosta**
 
 Broń u klienta **jest już wyjmowana poprawnie** (patrz „Co jest zrobione").
 
-**Uruchomienie:**
+**Uruchomienie (dozorca robi drugą połowę sam):**
+```
+tools/stop.sh
+WF_GAMESCOPE=1 WF_W=1100 WF_H=620 WF_PREFIX=~/.local/share/witchfire-mp/compat1 \
+  WF_INJECT=proxy nohup tools/launch-instance2.sh &
+setsid nohup tools/dozorca.sh /tmp/przebieg.out > /dev/null 2>&1 < /dev/null &
+# gracz klika CONTINUE i wchodzi na wyprawe — KIEDY MU WYGODNIE
+```
+`dozorca.sh` wykrywa wejście na wyprawę po zmianie `GWorld` ze źródła
+niezerowego, sam dołącza klienta i zbiera pomiar. Człowiek klika **raz**.
+
+**Uruchomienie ręczne:**
 ```
 tools/stop.sh
 WF_GAMESCOPE=1 WF_W=1100 WF_H=620 WF_PREFIX=~/.local/share/witchfire-mp/compat1 \
@@ -74,11 +85,35 @@ jednoznacznie „zera nie było".
 Przebudowa i wdrożenie biblioteki: `tools/wdroz-dll.sh` (buduje, kopiuje do
 katalogu gry i porównuje sumy — gra musi być zamknięta).
 
+## KAMIENIE MILOWE — gdzie jesteśmy i co bramkuje co
+
+| | stan |
+|---|---|
+| **M0** dwaj gracze w jednym świecie, broń, ekwipunek hosta | **zrobione**, potwierdzone godzinami gry |
+| **M1** sesja, która nie kończy się awarią | **wąskie gardło** — obie żywe sygnatury załatane 12.08, **niesprawdzone** |
+| **M2** ruch klienta jak u hosta | połowa: `HasMovementInput` naprawione, `IsOnGround` zdiagnozowane |
+| **M3** broń klienta (amunicja, przeładowanie) | mechanizm rozebrany, pomiar uzbrojony, brak odczytu |
+| **M4** **reszta gry w co-opie** | **biała plama** — `docs/PRZEGLAD.md` |
+| **M5** żeby ktoś inny mógł tego użyć | publiczne repo jest, instalacji od zera nikt nie przeszedł |
+
+**M1 bramkuje wszystko**, bo bez długiej sesji nie da się niczego zmierzyć.
+Dlatego kolejność jest teraz: awarie → amunicja → przegląd wszerz → ruch → stamina.
+
+**Amunicja przed ruchem** nie dlatego, że ważniejsza, tylko dlatego, że jest
+prawdopodobnie POWYŻEJ awarii `0x148`: jej stos ma ramkę w pętli po broniach
+w ekwipunku, a pętla przeładowania bez końca wali w tę ścieżkę bez przerwy.
+
 ## NASTĘPNY KROK — jedna przeszkoda, zmierzona i nazwana
 
-Stan na 12.08, 01:0x. Biblioteka wdrożona (`md5=69eeec95`), gry **zamknięte**.
-Markery u hosta: `fix_czas` (zostaje — działa) **+ nowy `log_tryb`**.
-`log_ammo` po obu stronach. `fix_ammo` dalej zdjęty po obu stronach.
+Stan na 12.08, 01:4x. Biblioteka wdrożona (`md5=77cddef7`), gry **zamknięte**.
+
+Markery u hosta: `fix_czas`, `log_tryb`, `log_ammo` oraz **dwie nowe ściany**:
+`fix_lista` i `fix_ekwipunek` (obie po obu stronach). `fix_ammo` dalej zdjęty.
+
+**Cztery niesprawdzone markery naraz — następny przebieg musi być zaprojektowany
+pod PRZYPISANIE, nie tylko pod pomiar.** Każdy ma własny licznik w logu, więc
+da się powiedzieć, który zadziałał; ale próby kontrolne (zdjęcie markera) trzeba
+wpisać do planu, a nie zostawiać na dobre chęci.
 
 **Przebieg jest przygotowany i czeka na jedno kliknięcie.** Wystarczy wejść na
 wyprawę — klienta dołączy `dozorca` (patrz „Jak to teraz działa"), a log

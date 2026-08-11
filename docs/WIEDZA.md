@@ -1678,7 +1678,60 @@ wyzwalacz miał na czym stać. To dokładnie zasada 3, tym razem złapana na cza
 Drugi wniosek: `LIMIT: GetMaxSpeed` w logu **nie jest** dowodem, że gracz się
 rusza — ta funkcja liczy sufit co klatkę, także gdy postać stoi.
 
-## 3g. Amunicja — `0x141B242F0` to ZACISK W DÓŁ, nie napełnianie (analiza statyczna)
+## 3i. ŚCIANA #3 — rozgłoszenie do WISZĄCEGO słuchacza przy dołączaniu klienta
+
+Zgłoszenie gracza: **„to się czasami powtarza, kiedy klient dołącza w trakcie"**.
+Zmierzone 12.08 00:37:52 — host padł ~4 s po tym, jak pionek klienta dostał
+tryb ruchu, czyli dokładnie w chwili dołączania.
+
+```
+EXCEPTION_ACCESS_VIOLATION reading address 0x12   (sygnatura abeaa893 to INNA sprawa)
+#0 0x1419E7BA1   #1 0x1419EEA59 — w funkcji 0x1419EE860, tej samej, która
+                                  rozgłasza „LoadGameDataForTags" po magazynach
+```
+
+Miejsce awarii, instrukcja po instrukcji (funkcja `0x1419E7B40`):
+
+```
+lea  r14,[rcx+0x360]     ; sekcja krytyczna
+mov  rbx,[rdi+0x240]     ; tablica słuchaczy, licznik w +0x248
+pętla:
+  mov  rcx,[rbx]         ; element
+  test rcx,rcx / je      ; gra sprawdza NULL...
+  mov  rax,[rcx]         ; ...ale nie sprawdza, czy wskaźnik JESZCZE ŻYJE
+  call [rax+0x10]        ; ← AWARIA: rax = 2, więc czyta spod 0x12
+```
+
+Element **nie był nullem** — był **wiszący**, po obiekcie, którego już nie ma.
+To ta sama rodzina co ściana #1 i #2 (§4): kod pisany dla jednego gracza
+zakłada, że nikt się nie wyrejestrowuje. Ten sam mechanizm stoi za duplikatem
+ekwipunku, przeciw któremu działa `fix_dup`.
+
+### Łatka `fix_lista`
+
+Nie podrabiamy mechaniki: gra **ma** tu własnego strażnika i sama pomija wpisy,
+których nie da się zawołać — tylko jej warunek jest za wąski. Rozszerzamy go
+o to, co zawiodło, i wychodzimy **dokładnie tą samą drogą**, której używa jej
+własne pominięcie (skok na `add rbx,8`).
+
+Trampolina odrzuca element, gdy jego tablica metod jest zerem, niewyrównana
+do 8, spoza przestrzeni użytkownika albo poniżej `0x10000`. Obserwowana wartość
+`2` przepada na dwóch z tych czterech testów.
+
+**Jak powstała, bo to jest tu istotne.** Bajty złożono najpierw w Pythonie
+i **zdeasemblowano kontrolnie** (cztery skoki muszą lądować w pominięciu, dwa
+adresy i offset licznika się zgadzać), a po przepisaniu do C++ porównano
+tablicę bajt w bajt z zweryfikowanym wzorcem. Powód jest w tym pliku od dawna:
+pierwsza taka trampolina w projekcie miała **trzy błędy naraz** i wyłapała je
+dopiero deasemblacja kontrolna.
+
+Marker `fix_lista`, licznik pominięć w logu. Potwierdzać przez **usunięcie**
+markera — awaria ma wtedy wrócić.
+
+**Czego to NIE tłumaczy:** awarii `0x148` z 11.08 23:58 (sygnatura `abeaa893`,
+inny stos, ramka w pętli po broniach w ekwipunku). To osobna sprawa.
+
+ — `0x141B242F0` to ZACISK W DÓŁ, nie napełnianie (analiza statyczna)
 
 Ustalone na zrzucie obrazu, **bez uruchomionej gry**; potwierdzone przez
 niezależną próbę obalenia, która wyostrzyła sformułowanie.
