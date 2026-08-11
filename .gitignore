@@ -1,0 +1,26 @@
+build/
+*.o
+*.obj
+*.dll
+*.exe
+*.pdb
+dumps/
+logs/
+scratch/
+src/proxy-dll/build/
+# Gotowa biblioteka nie idzie do repo — kazdy buduje u siebie
+# przez src/proxy-dll/build.sh
+dist/
+WFcoop.txt
+WFCoopProxy.log
+
+# Duzy artefakt lokalny, nie trafia do repo.
+obraz/
+
+# Pozostalosc po indeksowej wersji tools/szukaj.py (dzis to nakladka na grep,
+# zadnego indeksu juz nie ma). Wpis zostaje, zeby stary plik nie wrocil do repo.
+.szukaj-indeks.json
+
+# Artefakty Pythona — wpadly do repo przez `git add -A`
+__pycache__/
+*.pyc
