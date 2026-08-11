@@ -2607,7 +2607,11 @@ static StanAmuna* stanDla(uintptr_t asc)
 static void mozeNapelnijMagazynek(uintptr_t base, void* asc, const char* nz, float v)
 {
     if (!g_fixAmmoWlaczony || g_wNapelnianiu || !base) return;
-    if (strlen(nz) != 17) return;                   // tylko `CurrentAmmoInClip`
+    // Porownanie NAZWY, nie dlugosci. Dotad stalo tu `strlen(nz) != 17`, co
+    // dzialalo tylko dlatego, ze filtr przepuszczal wylacznie `CurrentAmmo*`.
+    // Po dolozeniu `PendingClipRefill` — ktory ma DOKLADNIE tyle samo znakow —
+    // ten skrot cicho wpuscilby go tutaj.
+    if (strcmp(nz, "CurrentAmmoInClip") != 0) return;
     if (v > 0.5f) return;                           // napelniony — nie ma objawu
 
     StanAmuna* s = stanDla((uintptr_t)asc);
@@ -2654,8 +2658,8 @@ static bool nazwaAtrybutu(void* attr, char* out, size_t cap)
 {
     const uintptr_t p = *(const uintptr_t*)attr;
     const int32_t dlugosc = *(const int32_t*)((uintptr_t)attr + 8);
-    // Tani filtr: „CurrentAmmoInClip" ma 17 znakow, „CurrentAmmo" 11 —
-    // a dlugosc w `FString` liczy jeszcze znak konca.
+    // Tani filtr: „CurrentAmmoInClip" ma 17 znakow, „CurrentAmmo" 11,
+    // „PendingClipRefill" tez 17 — a dlugosc w `FString` liczy jeszcze znak konca.
     if (dlugosc != 18 && dlugosc != 12) return false;
     if (!sensownyWsk(p) || (size_t)dlugosc >= cap) return false;
     const wchar_t* w = (const wchar_t*)p;
@@ -2664,7 +2668,14 @@ static bool nazwaAtrybutu(void* attr, char* out, size_t cap)
         out[i] = (char)w[i];
     }
     out[dlugosc - 1] = 0;
-    return strncmp(out, "CurrentAmmo", 11) == 0;
+    // `PendingClipRefill` dolozony 12.08: analiza statyczna (WIEDZA §3g) pokazala,
+    // ze to ON jest prawdziwym napelnianiem, a `0x141B242F0` tylko zaciska w dol.
+    // Zgloszenie gracza „bron przeladowuje sie w kolko bez dodawania amunicji"
+    // znaczy, ze sciezka przeladowania gry DZIALA i mimo to konczy zerem — wiec
+    // pytanie brzmi, czy ten atrybut w ogole jest zapisywany dla broni klienta.
+    // Nie dokladamy zadnego haka: ten sam zapis idzie tym samym gniazdem 180 ASC.
+    return strncmp(out, "CurrentAmmo", 11) == 0
+        || strcmp(out, "PendingClipRefill") == 0;
 }
 
 static void __fastcall thunkSetAttr(void* asc, void* attr, float v)

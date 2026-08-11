@@ -76,9 +76,9 @@ katalogu gry i porównuje sumy — gra musi być zamknięta).
 
 ## NASTĘPNY KROK — jedna przeszkoda, zmierzona i nazwana
 
-Stan na 12.08, 00:4x. Biblioteka wdrożona (`md5=6266c439`), gry **zamknięte**.
+Stan na 12.08, 01:0x. Biblioteka wdrożona (`md5=69eeec95`), gry **zamknięte**.
 Markery u hosta: `fix_czas` (zostaje — działa) **+ nowy `log_tryb`**.
-`fix_ammo` dalej zdjęty po obu stronach.
+`log_ammo` po obu stronach. `fix_ammo` dalej zdjęty po obu stronach.
 
 **Przebieg jest przygotowany i czeka na jedno kliknięcie.** Wystarczy wejść na
 wyprawę — klienta dołączy `dozorca` (patrz „Jak to teraz działa"), a log
@@ -140,6 +140,16 @@ Analiza statyczna (`WIEDZA.md` §3g) mówi, gdzie szukać: `0x141B242F0` to
 **zacisk w dół** (`min(magazynek, ClipSize, zapas)` — pierwszy operand jest
 polem docelowym, więc nigdy nie podniesie), a napełnia `0x141B39940` przez
 atrybut `PendingClipRefill`. To hipoteza 24.
+
+**Zmierzy się w tym samym przebiegu, bez nowego haka.** Zapis `PendingClipRefill`
+idzie tym samym gniazdem 180 ASC, na którym od tygodnia siedzi `log_ammo` —
+odrzucał go tylko filtr nazwy. Filtr rozszerzony. Co znaczy który wynik:
+
+| co w logu | znaczenie |
+|---|---|
+| `AMUNICJA: PendingClipRefill = N` dla broni klienta, `N > 0` | gra policzyła doładowanie — winny jest **konsument** tego atrybutu |
+| brak takiego wiersza dla klienta, a jest dla hosta | `0x141B39940` nie dochodzi dla broni klienta — szukać wyżej |
+| `PendingClipRefill = 0` | różnica `ClipSize − magazynek` wyszła zerem, czyli `ClipSize` też jest zerem ⇒ ASC broni klienta **nie ma zestawu atrybutów** |
 
 ### 3. Awaria hosta 23:58 — próba kontrolna do dołożenia za darmo
 
