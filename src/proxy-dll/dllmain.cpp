@@ -250,6 +250,7 @@ static void wfcoopWyjmijBron(uintptr_t base);
 static void kanalTick(uintptr_t base);
 static void tikNapelniania(uintptr_t base);
 static void tikWarunkuRuchu(uintptr_t base);
+static void tikPrzejsciaRuchu(uintptr_t base);
 static uintptr_t g_bazaModulu = 0;
 
 // Wolane z trampoliny, czyli juz na watku gry.
@@ -271,6 +272,10 @@ extern "C" void wfcoopOnGameThread()
     // Podtrzymanie warunku ruchu pionka zdalnego — co klatke, bo maszyna
     // kasuje go w swoim tiku (zmierzone 21:17: kazdy zapis widzi przed=0).
     if (g_bazaModulu) tikWarunkuRuchu(g_bazaModulu);
+
+    // Kolejkowanie przejscia w chwili, gdy warunki gry sa prawdziwe — z watku
+    // gry, bo wola jej kod (`AddTransitionToQueue` przez `ProcessEvent`).
+    if (g_bazaModulu) tikPrzejsciaRuchu(g_bazaModulu);
 
     if (!g_travelArmed) return;
     if (InterlockedExchange(&g_travelDone, 1)) return;   // tylko raz
@@ -2525,6 +2530,105 @@ static bool patchPodsluchWejscia(uintptr_t base)
     return true;
 }
 
+// ── USCISK DLONI OBJECIA PIONKA (marker `WFCoop_log_objecie.txt`) ───────────
+//
+// Odczyt stanu klienta w chwili czarnego ekranu, 12.08 03:30:
+//
+//   DimensionPlayerController_C  Role=2  Player OK, kamera OK, Pawn OK,
+//                                        ACKNOWLEDGEDPAWN = NULL
+//
+// `AcknowledgedPawn = NULL` przy ustawionym `Pawn` znaczy, ze klient nie wykonal
+// `AcknowledgePossession`. Ten uscisk dloni daje klientowi WIDOK i sprawia, ze
+// zaczyna odsylac ruch, wiec jego brak spina wszystkie objawy w jeden lancuch:
+//
+//   brak potwierdzenia -> kamera bez celu  -> czarny ekran
+//                      -> klient milczy    -> 60 s ciszy -> rozlaczenie (64 s)
+//
+// Mierzymy OBA konce, bo tylko to rozroznia trzy mozliwosci:
+//   `ClientRestart` nie dochodzi          -> serwer go nie wysyla albo gubi sie po drodze
+//   dochodzi, `ServerAck...` nie wraca    -> klient go dostaje i nie odpowiada
+//   oba sa, a `AcknowledgedPawn` zerowe   -> odpowiedz jest, ale nie zapisuje sie stan
+//
+// Ten sam kod idzie po obu stronach; kazda strona zobaczy swoja polowe.
+// Mechanizm bez nowosci: podmiana `UFunction::Func`, dokladnie jak kanal stanu.
+static FNativeFunc   g_origClientRestart = nullptr;
+static FNativeFunc   g_origServerAck     = nullptr;
+static bool          g_logObjecie        = false;
+static volatile LONG g_ileRestart = 0, g_ileAck = 0;
+
+static void __fastcall thunkClientRestart(void* ctx, void* stos, void* wynik)
+{
+    if (g_logObjecie && g_bazaModulu && sensownyWsk((uintptr_t)ctx)) {
+        const LONG n = InterlockedIncrement(&g_ileRestart);
+        if (n <= 20) {
+            char nz[128] = "?";
+            nazwaObiektu(g_bazaModulu, (uintptr_t)ctx, nz, sizeof nz);
+            logLine("OBJECIE: ClientRestart DOSZLO do %s  [%ld raz]", nz, n);
+        }
+    }
+    if (g_origClientRestart) g_origClientRestart(ctx, stos, wynik);
+}
+
+static void __fastcall thunkServerAck(void* ctx, void* stos, void* wynik)
+{
+    if (g_logObjecie && g_bazaModulu && sensownyWsk((uintptr_t)ctx)) {
+        const LONG n = InterlockedIncrement(&g_ileAck);
+        if (n <= 20) {
+            char nz[128] = "?";
+            nazwaObiektu(g_bazaModulu, (uintptr_t)ctx, nz, sizeof nz);
+            logLine("OBJECIE: ServerAcknowledgePossession DOSZLO do %s  [%ld raz]", nz, n);
+        }
+    }
+    if (g_origServerAck) g_origServerAck(ctx, stos, wynik);
+}
+
+static bool patchObjecieLog(uintptr_t base)
+{
+    const uintptr_t tab = base + addr::GUObjectArray_OFF + 0x10;
+    const uintptr_t chunks = *(const uintptr_t*)tab;
+    const int32_t ile    = *(const int32_t*)(tab + 0x14);
+    const int32_t nchunk = *(const int32_t*)(tab + 0x1C);
+    if (!sensownyWsk(chunks) || ile <= 0 || nchunk <= 0) return false;
+
+    char nazwa[128], nazwaKl[128];
+    int zalozone = 0;
+    for (int32_t ci = 0; ci < nchunk; ++ci) {
+        const uintptr_t blok = ((const uintptr_t*)chunks)[ci];
+        if (!sensownyWsk(blok)) continue;
+        int32_t tu = ile - ci * 65536;
+        if (tu > 65536) tu = 65536;
+        if (tu <= 0) break;
+        for (int32_t i = 0; i < tu; ++i) {
+            const uintptr_t obj = *(const uintptr_t*)(blok + (uintptr_t)i * 0x18);
+            if (!sensownyWsk(obj)) continue;
+            const uintptr_t klasa = *(const uintptr_t*)(obj + UOBJ_CLASS_OFF);
+            if (!sensownyWsk(klasa)) continue;
+            if (!nazwaObiektu(base, klasa, nazwaKl, sizeof nazwaKl)) continue;
+            if (strcmp(nazwaKl, "Function") != 0) continue;
+            if (!nazwaObiektu(base, obj, nazwa, sizeof nazwa)) continue;
+
+            auto* gniazdo = (FNativeFunc*)(obj + addr::UFUNC_FUNC_OFF);
+            if (strcmp(nazwa, "ClientRestart") == 0 && !g_origClientRestart) {
+                g_origClientRestart = *gniazdo;
+                *gniazdo = &thunkClientRestart;
+                logLine("OBJECIE: hak na ClientRestart zalozony (UFunction 0x%llX)",
+                        (unsigned long long)obj);
+                ++zalozone;
+            } else if (strcmp(nazwa, "ServerAcknowledgePossession") == 0 && !g_origServerAck) {
+                g_origServerAck = *gniazdo;
+                *gniazdo = &thunkServerAck;
+                logLine("OBJECIE: hak na ServerAcknowledgePossession zalozony "
+                        "(UFunction 0x%llX)", (unsigned long long)obj);
+                ++zalozone;
+            }
+        }
+    }
+    if (zalozone < 2)
+        logLine("OBJECIE: zalozono tylko %d z 2 hakow — cisza w logu bedzie "
+                "dwuznaczna, wiec sprawdz to najpierw", zalozone);
+    return zalozone > 0;
+}
+
 static bool patchKanalStanu(uintptr_t base)
 {
     const uintptr_t tab = base + addr::GUObjectArray_OFF + 0x10;
@@ -2592,6 +2696,77 @@ static bool patchKanalStanu(uintptr_t base)
     }
     logLine("KANAL: nie znalazlem UFunction ServerSetInversedScreenRatio");
     return false;
+}
+
+// ── KOLEJKOWANIE PRZEJSCIA W CHWILI, GDY WARUNKI SA PRAWDZIWE ───────────────
+//
+// Pomiar 12.08, 02:37 — 400 probek pionka klienta przez 20 s:
+//
+//   HasMovementInput = 1 : 44% czasu
+//   IsOnGround       = 1 : 95% czasu
+//   OBA naraz            : 42% czasu      <- warunek `IdleToWalking`
+//   stan maszyny         : 0 (Idle) w 100% probek
+//
+// Czyli warunki NIE SA blokada. Gra po prostu **nie probuje** tego przejscia
+// dla pionka zdalnego: u gracza lokalnego przejscia kolejkuje obsluga wejscia,
+// ktorej dla zdalnego nie ma, wiec maszyna nawet nie rozwaza `IdleToWalking`.
+//
+// To tlumaczy tez, czemu nasze wczesniejsze kolejkowanie „dzialalo mechanicznie,
+// ale bylo odrzucane": kolejkowalismy przy zmianie sprintu albo kucania, a w tej
+// wlasnie chwili warunki bywaja falszywe. Kolejkowalismy w zlym momencie.
+//
+// Nie podrabiamy mechaniki: wolamy WLASNA funkcje gry (`AddTransitionToQueue`)
+// z JEJ WLASNA nazwa przejscia, a o tym, czy przejscie dojdzie, decyduje jej
+// ocena warunkow. Zmieniamy wylacznie CHWILE, w ktorej o to prosimy.
+static bool          g_fixPrzejsciaWlaczony = false;
+static uint64_t      g_tagHMI = 0;     // State.Condition.Player.HasMovementInput
+static uint64_t      g_tagIOG = 0;     // State.Condition.Player.IsOnGround
+static volatile LONG g_probPrzejscia = 0;
+static volatile LONG g_udanychPrzejsc = 0;
+
+static bool znajdzTagiRuchu(uintptr_t base, uintptr_t sm)
+{
+    if (g_tagHMI && g_tagIOG) return true;
+    const uintptr_t d = *(const uintptr_t*)(sm + addr::SM_CUSTOM_CONDITIONS);
+    const int32_t n = *(const int32_t*)(sm + addr::SM_CUSTOM_CONDITIONS + 8);
+    if (!sensownyWsk(d) || n <= 0 || n > 64) return false;
+    char nz[160];
+    for (int i = 0; i < n; ++i) {
+        const uint64_t tag = *(const uint64_t*)(d + (uintptr_t)i * addr::WARUNEK_WPIS_ROZMIAR);
+        if (!nazwaFName(base, (uint32_t)(tag & 0xFFFFFFFF), nz, sizeof nz)) continue;
+        if (strcmp(nz, "State.Condition.Player.HasMovementInput") == 0) g_tagHMI = tag;
+        else if (strcmp(nz, "State.Condition.Player.IsOnGround") == 0) g_tagIOG = tag;
+    }
+    return g_tagHMI && g_tagIOG;
+}
+
+static void tikPrzejsciaRuchu(uintptr_t base)
+{
+    if (!g_fixPrzejsciaWlaczony) return;
+
+    // Throttling: gdyby przejscie mimo wszystko nie dochodzilo, bez tego
+    // wolalibysmy kod gry szescdziesiat razy na sekunde bez skutku (zasada 7).
+    static volatile LONG klatka = 0;
+    if (InterlockedIncrement(&klatka) % 6 != 0) return;
+
+    for (auto& r : g_ruchZdalny) {
+        if (!r.sm || !sensownyWsk(r.sm)) continue;
+        if (*(const int32_t*)(r.sm + addr::SM_CURRENT_IDX) != 0) continue;   // tylko z Idle
+        if (!znajdzTagiRuchu(base, r.sm)) continue;
+        if (licznikWarunku(r.sm, g_tagHMI) <= 0) continue;
+        if (licznikWarunku(r.sm, g_tagIOG) <= 0) continue;
+
+        char droga[96] = "";
+        const bool ok = prowadzDoStanu(base, r.sm, 1, droga, sizeof droga);
+        const LONG prob = InterlockedIncrement(&g_probPrzejscia);
+        if (ok) InterlockedIncrement(&g_udanychPrzejsc);
+        if (prob <= 12 || prob % 300 == 0)
+            logLine("PRZEJSCIE: oba warunki prawdziwe, kolejkuje IdleToWalking — "
+                    "stan po %d %s  droga: %s  [prob %ld, udanych %ld]",
+                    (int)*(const int32_t*)(r.sm + addr::SM_CURRENT_IDX),
+                    ok ? "OSIAGNIETY" : "nie doszlo", droga[0] ? droga : "(brak)",
+                    prob, g_udanychPrzejsc);
+    }
 }
 
 // Strona klienta: pilnujemy WLASNEJ postaci i wysylamy przy zmianie stanu.
@@ -4436,6 +4611,17 @@ static DWORD WINAPI heartbeat(LPVOID)
         // Przejsciowki limitow ruchu — zakladane tutaj z tego samego powodu co
         // liczniki: potrzebuja gotowej tablicy obiektow. Sluza do pomiaru
         // (`log_speed`) i do naprawy mapy atrybutow (`fix_attrs`).
+        if (g_logObjecie) {
+            static bool zalozone = false;
+            if (!zalozone && g_bazaModulu && w) zalozone = patchObjecieLog(g_bazaModulu);
+            static LONG ostR = -1, ostA = -1;
+            if (zalozone && (g_ileRestart != ostR || g_ileAck != ostA)) {
+                ostR = g_ileRestart; ostA = g_ileAck;
+                logLine("OBJECIE: ClientRestart %ld, ServerAcknowledgePossession %ld",
+                        ostR, ostA);
+            }
+        }
+
         if (g_logSpeed || g_fixAttrsWlaczony || g_fixCzasWlaczony || g_logTryb) {
             static bool zalozona = false;
             if (!zalozona && g_bazaModulu && w) {
@@ -4658,6 +4844,34 @@ static DWORD WINAPI worker(LPVOID)
             logLine("NAPELNIANIE: marker WFCoop_fix_dup.txt — bede pomijal powtorne napelnianie");
         } else {
             logLine("NAPELNIANIE: brak markera WFCoop_fix_dup.txt — nie latam duplikatu");
+        }
+    }
+
+    // Kolejkowanie przejscia ruchu w dobrej chwili — patrz `tikPrzejsciaRuchu`.
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_fix_przejscia.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_fixPrzejsciaWlaczony = true;
+            logLine("PRZEJSCIE: marker WFCoop_fix_przejscia.txt — bede kolejkowal "
+                    "IdleToWalking, gdy oba warunki gry sa prawdziwe");
+        } else {
+            logLine("PRZEJSCIE: brak markera WFCoop_fix_przejscia.txt — nie kolejkuje");
+        }
+    }
+
+    // Uscisk dloni objecia pionka — patrz `patchObjecieLog`. Czysta diagnostyka:
+    // nic nie zmienia, tylko melduje, ktora polowa uscisku dochodzi.
+    // Zakladany w heartbeat, bo potrzebuje gotowej tablicy obiektow.
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_log_objecie.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_logObjecie = true;
+            logLine("OBJECIE: marker WFCoop_log_objecie.txt — bede logowal uscisk "
+                    "dloni objecia pionka");
+        } else {
+            logLine("OBJECIE: brak markera WFCoop_log_objecie.txt — nie loguje");
         }
     }
 

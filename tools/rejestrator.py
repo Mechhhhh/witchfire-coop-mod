@@ -89,6 +89,13 @@ class Gracz:
         self.bronie = []           # [(nazwa_klasy, {atrybut: adres})]
         self.pozycja = 0           # adres FVector RelativeLocation kapsuly
         self.ekwipunek = 0
+        # Tozsamosc do sprawdzania W KAZDEJ PROBCE. Bez tego rejestrator czyta
+        # zwolniona pamiec po respawnie i produkuje smieci, ktore WYGLADAJA jak
+        # dane (12.08: `MovementMode = 188`, przyspieszenie rzedu 1e36, 674 s
+        # sesji do kosza). Zwolniona pamiec czyta sie bez bledu, wiec wykrywanie
+        # oparte na nieudanym odczycie nie ma prawa zadzialac.
+        self.klasa_pionka = 0
+        self.klasa_komp = 0
 
 
 def znajdz_proces(czysty=False):
@@ -258,7 +265,26 @@ def czyj(p, pionek):
     return "HOST" if p.nazwa_obiektu(kl) == "DimensionLocalPlayer" else "KLIENT"
 
 
+def zywy(p, g):
+    """Czy to wciaz TEN pionek. Dwa odczyty wskaznika — tanie i rozstrzygajace."""
+    if p.wskaznik(g.pionek + UOBJ_CLASS_OFF) != g.klasa_pionka:
+        return False
+    if p.wskaznik(g.komp + UOBJ_CLASS_OFF) != g.klasa_komp:
+        return False
+    # Maszyna stanow to OSOBNY obiekt i ginie osobno — bez tego sprawdzenia
+    # warunki czytaly sie ze zwolnionej pamieci jeszcze przez sekunde po tym,
+    # jak pionek i komponent byly juz wymienione (zmierzone 12.08, 11,8 s).
+    if p.wskaznik(g.pionek + CHAR_MASZYNA) != g.maszyna:
+        return False
+    # Komponent musi wciaz nalezec do tego pionka. Sam zgodny wskaznik klasy
+    # nie wystarcza: pamiec po pionku bywa przejeta przez INNY obiekt tej samej
+    # klasy, a wtedy klasa sie zgadza i nic nie widac.
+    return p.wskaznik(g.komp + COMP_POSTAC) == g.pionek
+
+
 def przygotuj(p, g, refl=None):
+    g.klasa_pionka = p.wskaznik(g.pionek + UOBJ_CLASS_OFF) or 0
+    g.klasa_komp = p.wskaznik(g.komp + UOBJ_CLASS_OFF) or 0
     try:
         przygotuj_atrybuty(p, g, refl or _refleksja(p))
     except Exception:
@@ -273,7 +299,11 @@ def przygotuj(p, g, refl=None):
         return
     for i in range(n):
         tag = p.u64(d + i * 16) or 0
-        g.warunki.append((p.nazwa(tag & 0xFFFFFFFF) or f"tag{tag:X}", d + i * 16 + 8))
+        # (nazwa, znacznik, indeks) — NIE adres bezwzgledny. Tablica warunkow
+        # przenosi sie przy realokacji, a zapamietany adres wskazuje wtedy
+        # w cudze dane i zwraca liczby w rodzaju 180562496, ktore w kolumnie
+        # `0/1` wygladaja jak awaria gry, a sa awaria pomiaru.
+        g.warunki.append((p.nazwa(tag & 0xFFFFFFFF) or f"tag{tag:X}", tag, i))
 
 
 def _f(p, adres, fmt="{:.2f}"):
@@ -296,9 +326,11 @@ def naglowek_kolumn(warunki):
 def wiersz(p, g, t):
     """Jeden wiersz o STALEJ liczbie kolumn. Brakujaca wartosc to `-`, nigdy
     zniknieta kolumna — plik ma sie dac czytac po godzinach grania."""
+    if not zywy(p, g):
+        return None                      # inny obiekt pod tym adresem — szukaj od nowa
     tryb = p.czytaj(g.komp + COMP_TRYB, 1)
-    if not tryb:
-        return None                      # obiekt zniknal — trzeba szukac od nowa
+    if not tryb or tryb[0] > 6:
+        return None                      # `MovementMode` ma zakres 0..6; wiecej = smiec
 
     zn = p.czytaj(g.pionek + CHAR_ZNACZNIK, 4)
     znacznik = struct.unpack("<f", zn)[0] if zn else -999.0
@@ -322,8 +354,11 @@ def wiersz(p, g, t):
            f"{dlugosc3(p, g.komp + COMP_PREDKOSC):.0f}"] + poz + \
           [f"{znacznik:.3f}", f"{zegar:.1f}", f"{zegar - znacznik:.2f}",
            str(stan if stan is not None else -1), str(idx if idx is not None else -1)]
-    for _n, off in g.warunki:
-        v = p.u32(off)
+    d = p.wskaznik(g.maszyna + SM_WARUNKI) if g.maszyna else 0
+    if d and g.warunki and p.u64(d) != g.warunki[0][1]:
+        return None                      # tablica warunkow podmieniona pod nami
+    for _n, _tag, i in g.warunki:
+        v = p.u32(d + i * 16 + 8) if d else None
         kol.append(str(v if v is not None else -1))
     for nz in ATRYBUTY:
         kol.append(_f(p, g.atrybuty.get(nz, 0)))
@@ -449,7 +484,7 @@ def main():
         return 1
 
     wzor = max(gracze, key=lambda g: len(g.warunki))
-    WARUNKI = [n for n, _ in wzor.warunki]
+    WARUNKI = [w[0] for w in wzor.warunki]
     naglowek = naglowek_kolumn(WARUNKI)
 
     f = open(x.plik, "w", buffering=1)
@@ -472,6 +507,7 @@ def main():
     t0 = time.time()
     okres = 1.0 / max(x.hz, 0.1)
     puste = 0
+    ostatnie_szukanie = 0.0
     while time.time() - t0 < x.minuty * 60:
         czas = time.time() - t0
         zle = 0
@@ -496,7 +532,10 @@ def main():
             # Wszyscy znikneli: respawn albo koniec gry. Szukamy od nowa, ale
             # rzadko — przejscie tablicy obiektow kosztuje.
             puste += 1
-            if puste >= 10:
+            # Przejscie tablicy obiektow kosztuje, wiec nie czesciej niz co 5 s —
+            # inaczej przy ladowaniu mapy szukalibysmy kilkanascie razy na sekunde.
+            if puste >= 3 and time.time() - ostatnie_szukanie > 5.0:
+                ostatnie_szukanie = time.time()
                 f.write(f"# {czas:.1f} szukam graczy od nowa\n")
                 try:
                     gracze = znajdz_graczy(p)
@@ -507,8 +546,12 @@ def main():
                     pass
                 puste = 0
                 if not gracze:
-                    f.write(f"# {czas:.1f} brak graczy — koncze\n")
-                    break
+                    # Przy ladowaniu mapy pionka NIE MA przez kilkanascie sekund.
+                    # Poprzednia wersja konczyla tu nagrywanie i gubila cala
+                    # reszte sesji. Czekamy dalej, do konca zamowionego okna.
+                    f.write(f"# {czas:.1f} brak pionka — czekam\n")
+                    time.sleep(3)
+                    continue
         else:
             puste = 0
         time.sleep(okres)
