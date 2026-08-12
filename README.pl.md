@@ -36,11 +36,19 @@ Każde twierdzenie niżej zostało zmierzone, nie założone.
 
 ## Co nie działa
 
-- **Sprint i ślizg szarpią.** Serwer nie wie, że zdalny gracz sprintuje, więc
- liczy 615 (zwykły bieg) albo 265 (kucanie) zamiast 800 i cofa klienta.
- Przyczyna jest rozpracowana do końca (niżej), naprawa jeszcze nie działa.
-- **Magazynek klienta zostaje pusty**, więc przeładowanie kręci się w kółko bez
- końca. Przyczyna jest znaleziona, a naprawa w chwili pisania jest w testach.
+- **Cały przepływ sesji jest przebudowywany wokół hubu (zwrot 12.08).**
+ Dołączanie do trwającej wyprawy — stary przepływ — to najtrudniejszy
+ przypadek sieciowy w Unrealu, a wyprawy i tak nie dało się razem *skończyć*:
+ powrót do hubu to lokalne ładowanie mapy, które rozrywa sesję. Nowy cel:
+ spotkanie w hubie i wspólna podróż.
+- **Dołączenie w hubie jeszcze nie przeżywa.** Klient ginął kilka sekund po
+ travelu — zdarzenie Blueprintu z timera odpalało się na obiekcie zniszczonym
+ przez travel. Strażnik nulla jest wdrożony i w testach. Po zerwaniu
+ połączenia host ~50 s później parkuje wątek gry na zamku, choć obraz dalej
+ się rysuje.
+- **Sprint i ślizg szarpią; magazynek klienta zostaje pusty.** Odłożone do
+ czasu przebudowy przepływu sesji — mogą być skutkami tego, że sekwencja
+ startu misji nigdy nie rusza dla drugiego gracza.
 - Kilka elementów HUD-u u klienta zostaje pustych (licznik mikstur, waluta z
  przebiegu, panel celu, własna strzałka na minimapie). Dane pod spodem są
  poprawne — to sprawa samego wyświetlania.

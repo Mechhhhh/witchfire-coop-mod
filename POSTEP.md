@@ -63,21 +63,33 @@ Only measured facts below — disproved ones too, since disproving narrows the f
 | 08-11 | PROOF BY MOVEMENT: the server copy never leaves `Idle` | client passes five states, server one |
 | 08-11 | DISPROVED: "just feed the machine an action" — there is no `Idle` → `Running` transition | 8/8 actions, both slots, state unchanged; graph from the machine's data |
 | 08-11 | Ammo: the fill code runs on the client and computes zero | host `=6`, client `=0`, same caller |
+| 08-12 | COURSE CHANGE: meet in the hub and travel together — joining a running mission was the hardest possible case, chosen by accident | player: an expedition cannot be finished together; the hub is the center of everything |
+| 08-12 | Host freezing at join was OUR regression (two new join-time trampolines) | control run without them: game clock 1:1, GameThread 47–70 ticks/s through the whole join |
+| 08-12 | The client dies ~4 s after travel: Blueprint event `SetLeashName` invoked on a null object by a health/revive timer | identical stack in three crash dumps; the twin event next door has been null-guarded for days |
+| 08-12 | Null guard for the twin thunk deployed (`fix_smycz`), trampoline verified by control disassembly | live two-player run pending |
+| 08-12 | NEW: after a dropped connection the host parks its game thread ~50 s later — an endless `futex_wait`, render keeps drawing | lands exactly on the first 30-second refill tick after the client controller loses its `Player` |
 
 ## What's next
 
-**1. Sprint and slide still do not work for the client.** The server keeps the pawn
-in `Idle`, and `IdleToWalking` requires the condition
-`State.Condition.Player.HasMovementInput`, which the server has no way to obtain —
-remote input exists only where the human sits. Setting it through the game's own
-`UpdateCustomConditionBool` does not produce the transition so far; it is unknown
-whether the condition is stored at all and when the machine reads it.
+The 08-12 course change reordered everything. The old flow — host starts an
+expedition alone, client joins the running mission — turned out to be the
+hardest networking case Unreal has, picked by accident. The new milestone:
+**a session that lives in the hub and survives the travel there and back.**
 
-**2. Client ammo — fix in progress, third version of the trigger.** The magazine
-fill runs on the client and computes zero, because the reserve does not exist yet.
-The two earlier triggers waited for a reserve write that never passes through the
-hooked slot. The third fires on the symptom itself — untested in a two-player run.
+**1. The client must survive joining in the hub.** It currently dies ~4 s after
+travel in a Blueprint timer event invoked on a destroyed object. A null guard
+for that event (`fix_smycz`) is deployed and awaiting a two-player control run,
+including a run with the guard removed to confirm the crash returns.
 
-**3. What is unconfirmed.** The patches have no control run with the marker removed,
-no series of repeated joins in one session was measured, and part of the client HUD
-stays empty although the data is correct on both sides.
+**2. The host must survive the client leaving.** ~50 s after a dropped
+connection the host's game thread parks on an endless `futex_wait`, right on
+the first 30-second inventory-refill tick after the client controller loses its
+`Player`. The host keeps rendering, so it looks alive and is not.
+
+**3. `ServerTravel` instead of local map loads.** Find what the game calls to
+start an expedition and to return to the hub, and turn it into a session
+travel so both players move together and mission-start scripts run server-side.
+
+**Parked until the session flow works:** client sprint/slide (server-side state
+machine never leaves `Idle`), client ammo, HUD gaps. Part of these may be
+symptoms of the session never being properly started for two players.

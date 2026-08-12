@@ -139,6 +139,12 @@ zamarzał**, a obie te trampoliny doszły tego samego wieczoru i siedzą w pętl
 wykonujących się przy dołączaniu. Dopóki to nie jest rozstrzygnięte, każdy inny
 pomiar przy dołączaniu jest niewiarygodny.
 
+> **ROZSTRZYGNIĘTE 12.08 14:41 (próba kontrolna).** Bez trampolin host NIE
+> zamarł — regresja potwierdzona, hipoteza 28 zamknięta. Timeout 64 s jednak
+> WRÓCIŁ przy zdrowym hoście: przyczyną jest śmierć klienta 4 s po travelu
+> (thunk BP `SetLeashName` na nullu, hipoteza 31). Liczby 46/110 s z tej sekcji
+> pozostają dobre; „host zamarza" przestało być częścią mechanizmu.
+
 ### 0c. Klient nie potwierdza objęcia pionka — najpewniej SKUTEK, nie przyczyna
 
 > **KOREKTA z 03:32.** Ta obserwacja jest prawdziwa jako odczyt, ale opisany
@@ -146,6 +152,13 @@ pomiar przy dołączaniu jest niewiarygodny.
 > dokończyć uścisk dłoni, więc brak potwierdzenia jest skutkiem zamrożenia.
 > **Nie kłaść markera `log_objecie` przed rozstrzygnięciem hipotezy 28** — hak
 > mierzyłby objaw.
+>
+> **KOREKTA 2 z 12.08 14:41.** Hipoteza 28 rozstrzygnięta (host zdrowy), więc
+> embargo na `log_objecie` ZDJĘTE. Sam łańcuch wymaga jednak poprawki głębiej:
+> klient nie wykonuje `AcknowledgePossession`, bo **umiera** 4 s po travelu
+> (`SetLeashName` na nullu — hipoteza 31), a nie dlatego, że czeka. Mierzyć
+> objęcie ma sens dopiero z żywym klientem, czyli razem ze strażnikiem
+> `fix_smycz`.
 
 Odczyt stanu klienta w chwili czarnego ekranu (po wyrzuceniu przez host):
 

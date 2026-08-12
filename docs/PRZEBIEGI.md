@@ -21,7 +21,7 @@ tak samo (proces znika), więc **tylko sygnatura je odróżnia**.
 | sygnatura | adres | strona | wystąpienia | stan |
 |---|---|---|---|---|
 | `41d65609` | `0x24` | host | 02:01, 02:11, **15:35** | boostery. Strażnik **potwierdzony dwustronnie**: z nim nie występuje, bez niego (kontrola 15:35) wraca |
-| `17fc181f` | `0x0` | **klient** | 03:00, 14:54, 16:10 | **ROZEBRANA 16:10.** `MyPawn` (`broń+0x998`) == null w efektach strzału. Miejsce: `0x141B59EAD`, sprawdzenie dwie instrukcje niżej istnieje i jest pomijane. Strażnik `WFCoop_fix_effects.txt` |
+| `17fc181f` | `0x0` | **klient** | 03:00, 14:54, 16:10, **12.08: 03:18, 03:25, 14:41** | **UWAGA: sygnatura zlepia RÓŻNE odczyty nulla — rozróżniać ramkami z `read-crash-xml.py`.** (a) 16:10 ROZEBRANA: `MyPawn` == null w efektach strzału, `0x141B59EAD`, strażnik `fix_effects` — od tamtej pory milczy. (b) 03:18/03:25/14:41, stos identyczny: thunk BP **`SetLeashName`** (`0x141B7DDAA`) na nullu z timera zdrowia/wskrzeszania, 4 s po travelu klienta; bliźniak `SetSpawnBehaviour` strzeżony od dawna, ten nie — strażnik `fix_smycz` w budowie (hipoteza 31) |
 | `154b0601` | `0x430` | host | 02:33 | wiązanie akcji wejścia. Strażnik założony; jedno wystąpienie przed łatką, więc dowód słabszy niż przy `0x24` |
 | `204026f6` | `0x3d0000000f` | host | 15:12 | śmieciowy wskaźnik (nie null). Podejrzenie o strażniki **oddalone** kontrolą 15:35 |
 | `9a071e89` | `0x0C` | host | 01:13 | zapis profilu przy śmierci; **droga A**, może nie dotyczyć drogi B |
@@ -64,6 +64,8 @@ nie znika i wygląda na zamrożony. Narzędzie: `tools/stos-watku.py`.
 | 14:54 | 0 wątków silnika — ale zostawił zrzut `17fc181f`, więc **padł**, nie zamarł | żył, +317 tick `GameThread` |
 | 15:12 | działał, 15–18 wątków, 706 FPS | **padł** (`204026f6`) |
 | 15:35 (kontrola bez strażników) | działał | **padł** (`41d65609`) |
+| 12.08 03:25 (trampoliny NA) | **padł** (`SetLeashName`, stos = 14:41) | **zamarzł** (regresja trampolin) |
+| 12.08 14:41 (kontrola H28, trampoliny ZDJĘTE) | **padł** (`SetLeashName`, zrzut 42 s od startu) | żył przez całe życie połączenia: zegar gry 1:1, GameThread 47–70 tik/s; wypadł do menu i wrócił po CONTINUE. **Potem, 14:43:14 (53 s po zerwaniu), spasował wątek gry**: `futex_wait` bez limitu, 0 tik/s, render dalej 241 FPS — dokładnie w 30-s takcie napełniania, pierwszym po „bez Player" (hipoteza 32) |
 
 **Ten sam test bez żadnych zmian dał odwrotny wynik** (14:54 vs 15:12). Zjawisko
 nie jest deterministyczne — pojedynczy przebieg nie dowodzi ani sukcesu, ani

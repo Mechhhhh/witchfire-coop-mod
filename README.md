@@ -34,12 +34,18 @@ Every claim below was measured, not assumed.
 
 ## What does not work
 
-- **Sprinting and sliding stutter.** The server does not know the remote player
- is sprinting, so it computes 615 (normal run) or 265 (crouch) instead of 800,
- and corrects the client backwards. The cause is fully traced (see below); the
- fix is not working yet.
-- **The client's magazine stays empty**, so reloading loops forever. The cause is
- found and a fix is in testing at the time of writing.
+- **The whole session flow is being rebuilt around the hub (course change
+ 08-12).** Joining a running expedition — the old flow — is the hardest
+ networking case Unreal has, and an expedition can never be *finished*
+ together: the return to the hub is a local map load that tears the session
+ apart. The new target is meeting in the hub and travelling together.
+- **Joining in the hub does not survive yet.** The client used to die seconds
+ after travel — a Blueprint timer event fired on an object destroyed by the
+ travel. A null guard is deployed and under test. After a drop, the host's
+ game thread parks on a lock ~50 s later while the render keeps drawing.
+- **Sprinting and sliding stutter; the client's magazine stays empty.** Both
+ parked while the session flow is rebuilt — they may be symptoms of the
+ mission-start sequence never running for the second player.
 - Several HUD elements are not filled in for the client (potion counter, run
  currency, objective panel, own arrow on the minimap). The underlying data is
  correct — this is display only.

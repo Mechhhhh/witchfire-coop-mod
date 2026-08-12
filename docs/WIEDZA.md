@@ -1994,6 +1994,56 @@ zgadnięte) — wszystkie używa `tools/stan-gracza.py`:
 
 ---
 
+## Próba kontrolna hipotezy 28 (12.08, 14:39–14:49) — host zdrowy, klient pada w `SetLeashName`
+
+Układ: `fix_lista` i `fix_ekwipunek` zdjęte obustronnie, host w hubie po
+CONTINUE, klient dołączył automatycznie z własnego menu (`SetClientTravel`
+14:41:10). Pomiar uzbrojony PRZED dołączeniem: licznik `ClientConnections`
+(`netdriver 0x3F4419D0`, progi 120/60 s odczytane na potwierdzenie adresu)
+co 0,5 s, tiki CPU wszystkich wątków hosta co 0,5 s, zegar gry z rejestratora
+5 Hz, zrzuty ekranu w conn+5/30/75/130 s; niezależnie zrzuty gracza.
+
+**Wynik: `0→1` w 14:41:17, `1→0` po 63,8 s — a host przez całe okno żył**
+(zegar gry 1:1 z czasem ściennym, GameThread 47–70 tik/s, gracz klikał
+i chodził). Werdykt z góry zapisanej tabeli: **zamrożenie z 03:25 było naszą
+regresją** — trampoliny `fix_lista`/`fix_ekwipunek` zostają zdjęte, dopóki
+ich pętle nie będą przepisane na tanie (zasada 7).
+
+**Rozłączenie po 64 s ma jednak DRUGĄ, niezależną przyczynę — klient umiera:**
+
+- zrzut 14:41 (42 s od startu, ~4 s po travelu): odczyt `0x0` w GameThread,
+  PC `0x141B7DDAA` = **thunk zdarzenia Blueprintu `SetLeashName`**
+  (`0x141B7DDA0+0xA`, `mov rbx,[rcx]` przy `rcx=this=0`);
+- stos: `UEngine::Tick` → **`TimerManager`** → funkcja stanu gracza
+  (literały `Lives/Health/Revive`) → okolice `UDimensionSpawnManager::
+  OnActorDestroyed` → thunk. Timer zdrowia/wskrzeszania woła zdarzenie
+  spawn-managera na obiekcie zniszczonym przez travel;
+- stos **IDENTYCZNY** w zrzutach 03:18, 03:25 i 14:41 — nocne „dołączenia"
+  ginęły tak samo, tylko przykrywało je zamrożenie hosta;
+- bliźniaczy thunk **`SetSpawnBehaviour`** (`0x141B7DDE0`, +0x40 dalej) jest
+  strzeżony od pierwotnego zrzutu (`dowody-awaria-klienta`: PC `+0x1b7ddea`)
+  przez `patchBpEventNullGuard` — awaria **przeniosła się na niestrzeżonego
+  bliźniaka**. Nazwy zdarzeń odczytane refleksją z gniazd `FName`
+  (`0x14644DDB8` → `SetLeashName`, `0x14644DDC8` → `SetSpawnBehaviour`);
+- to NIE jest powrót obalonej „łatki na null `AbilityCachedData`" — tamta
+  szła w funkcję SILNIKA wołaną z tysiąca miejsc i dała zawieszenie; strażnik
+  na konkretnym thunku to wzorzec od dawna przyjęty i działający.
+
+Naprawa: strażnik nulla na `0x141B7DDA0`, marker `fix_smycz`, licznik pominięć
+(hipoteza 31 w `DZIENNIK.md`).
+
+**Obserwacje uboczne, każda potwierdzona pomiarem tego przebiegu:**
+
+| co | dowód |
+|---|---|
+| sygnatura `17fc181f` ZLEPIA różne odczyty nulla — rozróżniać ramkami z `read-crash-xml.py`, nie sygnaturą | 16:10 padał w `0x141B59EAD` (efekty strzału), 03:18/03:25/14:41 w `0x141B7DDAA` (`SetLeashName`) — jedna sygnatura |
+| `PULS` proxy bije po śmierci GameThreadu — „zyje" w logu dowodzi życia wątku DLL, nie gry | klient po awarii: PULS co 5 s, proces ~6 tik/s, okno zamrożone na ostatniej klatce |
+| awaria z zawieszoną obsługą wyjątku wygląda jak zamrożenie także od strony nakładki | mangohud stanął na 14:41:15 (4 FPS ostatniej próbki), zrzut w `Crashes` już leżał |
+| host przy powstaniu połączenia WYPADA DO MENU, ale sesja to przeżywa | zrzut gracza 14:41:21 (menu), po CONTINUE wrócił do hubu 14:41:55; netdriver ten sam, licznik trzymał 1 aż do timeoutu |
+| sterownika sieciowego NIE ma przed CONTINUE — powstaje dopiero po wejściu w hub | skan GObjects w menu: tylko klasy i `Default__`; po CONTINUE żywa instancja `IpNetDriver` |
+| host paruje wątek gry ~50 s PO zerwaniu połączenia (hipoteza 32) — objaw inny niż zamrożenie przy dołączaniu | 14:43:14: `futex_wait` bez limitu (`0x7f08d4565144`, `val 0x80`), wątek gry 0 tik/s przy renderze 241 FPS; takt = pierwszy 30-s cykl napełniania po „bez Player"; na hoście sieroty: 4 bronie, kontroler bez pionka. Gracz: „to się zawsze działo" |
+| po zerwaniu host dalej OBSŁUGUJE zombie klienta | `NAPELNIANIE #29` dla kontrolera klienta 23 s po zamknięciu połączenia, już jako „bez Player" |
+
 ## Hipotezy OBALONE — nie wracać
 
 | hipoteza | czym obalona |

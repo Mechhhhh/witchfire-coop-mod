@@ -212,8 +212,14 @@ constexpr uintptr_t BASE = 0x140000000ull;
 constexpr uintptr_t GEngine_OFF = 0x6686DA0;
 constexpr uintptr_t GWorld_OFF = 0x668AA68;
 constexpr uintptr_t SetClientTravel_OFF = 0x3BF1590;
-// Thunk wolajacy zdarzenie Blueprintu — miejsce, w ktorym ginie klient.
+// Thunk wolajacy zdarzenie Blueprintu `SetSpawnBehaviour` (FName z gniazda
+// 0x14644DDC8). Strzezony nullem od pierwotnego zrzutu; przez jego trampoline
+// wchodzi tez travel na watku gry.
 constexpr uintptr_t BpEventThunk_OFF = 0x1B7DDE0;
+// Blizniaczy thunk zdarzenia `SetLeashName` (FName z gniazda 0x14644DDB8).
+// TU ginie klient po travelu (zrzuty 03:18/03:25/14:41 12.08): timer zdrowia
+// wola zdarzenie na obiekcie zniszczonym przez travel, rcx==this==0.
+constexpr uintptr_t LeashThunk_OFF = 0x1B7DDA0;
 }
 
 // ── TRAVEL Z WATKU GRY ──────────────────────────────────────────────────────
@@ -4443,6 +4449,90 @@ static bool patchBpEventNullGuard(uintptr_t base)
     return true;
 }
 
+// ── LATKA fix_smycz: blizniak powyzszego thunku — zdarzenie `SetLeashName` ──
+//
+// Zrzuty 03:18, 03:25 i 14:41 (12.08), stos identyczny: odczyt 0x0 w
+// GameThread pod +0x1B7DDAA, czyli `mov rbx,[rcx]` przy rcx==this==0.
+// Ten sam wzorzec, przeciw ktoremu stoi straznik na BpEventThunk_OFF — tyle
+// ze timer zdrowia/wskrzeszania wola SASIEDNIE zdarzenie spawn-managera,
+// `SetLeashName`, na obiekcie zniszczonym przez travel klienta do hosta.
+// Wywolanie zdarzenia na nullu jest zawsze bledem, a funkcja nic nie zwraca,
+// wiec przy rcx==0 wystarczy `ret`. Licznik pominiec — potwierdzenie przez
+// ZDJECIE markera: awaria ma wtedy wrocic z tym samym stosem.
+static volatile unsigned* g_smyczLicznik = nullptr;
+
+static bool patchLeashNullGuard(uintptr_t base)
+{
+    auto* fn = reinterpret_cast<unsigned char*>(base + addr::LeashThunk_OFF);
+
+    static const unsigned char expect[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x10,  // mov [rsp+0x10],rbx
+        0x57,                          // push rdi
+        0x48, 0x83, 0xEC, 0x20,        // sub rsp,0x20
+        0x48, 0x8B, 0x19               // mov rbx,[rcx]  <- tu padal klient
+    };
+    if (memcmp(fn, expect, sizeof(expect)) != 0) {
+        logLine("SMYCZ: bajty pod 0x%llX inne niz oczekiwane — NIE latam",
+                (unsigned long long)(uintptr_t)fn);
+        return false;
+    }
+
+    unsigned char* tr = nullptr;
+    for (uintptr_t a = base + 0x08000000; a < base + 0x40000000; a += 0x10000) {
+        tr = static_cast<unsigned char*>(
+            VirtualAlloc(reinterpret_cast<void*>(a), 0x1000,
+                         MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+        if (tr) break;
+    }
+    if (!tr) { logLine("SMYCZ: brak miejsca na trampoline"); return false; }
+
+    //   +0x00 test rcx,rcx
+    //   +0x03 jz   +0x13 -> +0x18     pominiecie: licznik i powrot do wolajacego
+    //   +0x05 mov  [rsp+0x10],rbx     oryginalne 5 B nadpisane skokiem
+    //   +0x0A jmp  [rip+0] -> +0x10   powrot do fn+5
+    //   +0x10 <adres powrotu, 8 B>
+    //   +0x18 inc  dword [rip+1] -> +0x1F
+    //   +0x1E ret
+    //   +0x1F <licznik, 4 B>
+    enum { OFF_POWROT = 0x10, OFF_LICZNIK = 0x1F };
+    unsigned char code[] = {
+        0x48, 0x85, 0xC9,                    // test rcx,rcx
+        0x74, 0x13,                          // jz   -> +0x18
+        0x48, 0x89, 0x5C, 0x24, 0x10,        // mov  [rsp+0x10],rbx  (oryginal)
+        0xFF, 0x25, 0x00, 0x00, 0x00, 0x00,  // jmp  qword ptr [rip+0]
+        0, 0, 0, 0, 0, 0, 0, 0,              // +0x10 adres powrotu
+        0xFF, 0x05, 0x01, 0x00, 0x00, 0x00,  // inc  dword [rip+1] -> licznik
+        0xC3,                                // ret
+        0, 0, 0, 0                           // +0x1F licznik
+    };
+    if (sizeof(code) != OFF_LICZNIK + 4) {
+        logLine("SMYCZ: BLAD WEWNETRZNY — rozmiar trampoliny %zu, oczekiwano %d",
+                sizeof(code), OFF_LICZNIK + 4);
+        return false;
+    }
+    const uintptr_t back = base + addr::LeashThunk_OFF + 5;
+    memcpy(code + OFF_POWROT, &back, sizeof(back));
+    memcpy(tr, code, sizeof(code));
+    g_smyczLicznik = (volatile unsigned*)(tr + OFF_LICZNIK);
+
+    DWORD old = 0;
+    if (!VirtualProtect(fn, 5, PAGE_EXECUTE_READWRITE, &old)) {
+        logLine("SMYCZ: VirtualProtect odmowil");
+        return false;
+    }
+    const int32_t rel = static_cast<int32_t>(
+        reinterpret_cast<intptr_t>(tr) - reinterpret_cast<intptr_t>(fn + 5));
+    fn[0] = 0xE9;
+    memcpy(fn + 1, &rel, sizeof(rel));
+    VirtualProtect(fn, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 5);
+
+    logLine("SMYCZ: straznik nulla zalozony na SetLeashName "
+            "(0x%llX -> trampolina 0x%llX)",
+            (unsigned long long)(uintptr_t)fn, (unsigned long long)(uintptr_t)tr);
+    return true;
+}
+
 
 // Adres hosta czytamy z pliku — ten sam, z ktorego korzysta mod Lua, zeby oba
 // swiaty testowe konfigurowalo sie tak samo.
@@ -4536,6 +4626,14 @@ static DWORD WINAPI heartbeat(LPVOID)
             if (teraz != ostatniE) {
                 logLine("EFEKTY: pominiete efekty strzalu bez pawna: %u", teraz);
                 ostatniE = teraz;
+            }
+        }
+        if (g_smyczLicznik) {
+            static unsigned ostatniS = 0;
+            const unsigned teraz = *g_smyczLicznik;
+            if (teraz != ostatniS) {
+                logLine("SMYCZ: pominiete SetLeashName na nullu: %u", teraz);
+                ostatniS = teraz;
             }
         }
 
@@ -4758,6 +4856,19 @@ static DWORD WINAPI worker(LPVOID)
             logLine("LATKA: marker WFCoop_no_patch.txt — pomijam latanie");
         } else {
             patchBpEventNullGuard(base);
+        }
+    }
+
+    // Straznik blizniaka (`SetLeashName`) — tez PRZED dolaczaniem, bo awaria
+    // wypada ~4 s po travelu. Bramkowany wlasnym markerem z licznikiem
+    // (zasada 9), zeby dalo sie go potwierdzic zdjeciem bez przebudowy.
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_fix_smycz.txt"), "r") == 0 && f) {
+            fclose(f);
+            patchLeashNullGuard(base);
+        } else {
+            logLine("SMYCZ: brak markera WFCoop_fix_smycz.txt — nie latam");
         }
     }
 
