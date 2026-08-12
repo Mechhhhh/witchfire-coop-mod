@@ -2,7 +2,7 @@
 
 > **UWAGA (2026-08-10): ten plik opisuje głównie porzuconą DROGĘ A** (wymuszanie
 > mapy przez `OpenLevel`). Obowiązuje **droga B**: host wchodzi normalnie, a DLL
-> dokłada nasłuch — patrz `START-TUTAJ.md`.
+> dokłada nasłuch — patrz `START-HERE.md`.
 >
 > Co z tego pliku **nadal obowiązuje**:
 > - `gamescope` jest wymagany (utrata fokusu pauzuje instancję),

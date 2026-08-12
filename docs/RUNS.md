@@ -66,6 +66,7 @@ nie znika i wygląda na zamrożony. Narzędzie: `tools/stos-watku.py`.
 | 15:35 (kontrola bez strażników) | działał | **padł** (`41d65609`) |
 | 12.08 03:25 (trampoliny NA) | **padł** (`SetLeashName`, stos = 14:41) | **zamarzł** (regresja trampolin) |
 | 12.08 14:41 (kontrola H28, trampoliny ZDJĘTE) | **padł** (`SetLeashName`, zrzut 42 s od startu) | żył przez całe życie połączenia: zegar gry 1:1, GameThread 47–70 tik/s; wypadł do menu i wrócił po CONTINUE. **Potem, 14:43:14 (53 s po zerwaniu), spasował wątek gry**: `futex_wait` bez limitu, 0 tik/s, render dalej 241 FPS — dokładnie w 30-s takcie napełniania, pierwszym po „bez Player" (hipoteza 32) |
+| 12.08 15:16 (h31, `fix_smycz` NA) | **PRZEŻYŁ dołączenie w hubie** — pierwszy raz: `SMYCZ: 1` w 5 s po travelu, kamera i świat żywe, uścisk objęcia pełny, połączenie > 138 s; wejście martwe (hipoteza 33) | żył, gracz grał |
 
 **Ten sam test bez żadnych zmian dał odwrotny wynik** (14:54 vs 15:12). Zjawisko
 nie jest deterministyczne — pojedynczy przebieg nie dowodzi ani sukcesu, ani
@@ -80,7 +81,7 @@ Wcześniej ginął w kilka sekund po dołączeniu.
 | pomiar | wynik |
 |---|---|
 | broń klienta | `BRON: CurrentWeaponIndex -1 -> 0 (UDALO SIE)` o 16:25:11, **4 s po dołączeniu** |
-| broń hosta | 48 próbek `bron-lokalna.py`, wszystkie `idx=0` — ale **to był zły wskaźnik**: host traci cały widok pierwszoosobowy, a indeks broni zostaje. Patrz `WIEDZA.md` §3c |
+| broń hosta | 48 próbek `bron-lokalna.py`, wszystkie `idx=0` — ale **to był zły wskaźnik**: host traci cały widok pierwszoosobowy, a indeks broni zostaje. Patrz `KNOWLEDGE.md` §3c |
 | postacie u klienta | własna `Role=2` z `idx=0`, kopia hosta `Role=1` z `idx=-1` (poprawnie) |
 | licznik strażnika efektów | **0** |
 

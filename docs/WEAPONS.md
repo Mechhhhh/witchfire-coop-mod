@@ -10,7 +10,7 @@ broni) i `logs/bron-naprawa2` (z, broń i celownik na ekranie).
 **Na drodze B ta sama łatka nie zadziałała ani razu.** Log klienta w obu
 przebiegach (15:11, 15:34): `BRON: poddaje sie po 40 probach` — funkcja
 `znajdzEkwipunekLokalny` nigdy nie znalazła postaci o `Role == 2`. To jest
-pozycja numer 0 na liście do zrobienia (`START-TUTAJ.md`).
+pozycja numer 0 na liście do zrobienia (`START-HERE.md`).
 
 Szczegóły dochodzenia niżej — zostawiam też ślepe uliczki, bo dwie z nich
 kosztowały po przebiegu i łatwo w nie wdepnąć drugi raz.
@@ -96,7 +96,7 @@ Zostawiam to zapisane, bo lekcja jest ogólniejsza niż sama pomyłka:
 
 Zrzut z okna klienta pokazuje objaw wprost: licznik amunicji **16/180** w rogu,
 a w kadrze **ani broni, ani rąk, ani celownika**. Klient renderuje przy tym
-**143 FPS** — w scenariuszu A nie zamarza, co zgadza się z `SCENARIUSZE.md`.
+**143 FPS** — w scenariuszu A nie zamarza, co zgadza się z `SCENARIOS.md`.
 
 Zmierzony stan tej instancji w tej samej chwili: jedyna postać gracza u klienta
 to `Role=1` (SimulatedProxy) kopia postaci HOSTA, `Owner=null`, bez kontrolera.

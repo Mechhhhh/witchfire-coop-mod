@@ -5,9 +5,9 @@ przeczytaj sekcję „ZWROT", zanim cokolwiek zrobisz.**
 
 ## Co czytać
 
-**Ten plik, potem `PRZEGLAD.md` §0–§0c, potem `DZIENNIK.md`. Nic więcej na starcie.**
+**Ten plik, potem `OVERVIEW.md` §0–§0c, potem `JOURNAL.md`. Nic więcej na starcie.**
 
-`WIEDZA.md` (2300 linii) to zapis, JAK doszliśmy do wniosków — nie czytaj go
+`KNOWLEDGE.md` (2300 linii) to zapis, JAK doszliśmy do wniosków — nie czytaj go
 w całości. Wyszukuj punktowo:
 
 ```
@@ -18,7 +18,7 @@ tools/szukaj.py "mapa atrybutow"   # z nagłówkiem sekcji
 Nagłówek sekcji w wynikach mówi, czy trafienie pochodzi z ustalenia
 POTWIERDZONEGO, czy z OBALONEGO. **Zanim ruszysz z hipotezą — wyszukaj ją.**
 
-`ADRESY.md` — czysta referencja adresów i offsetów. `PRZEGLAD.md` — co
+`ADDRESSES.md` — czysta referencja adresów i offsetów. `OVERVIEW.md` — co
 w co-opie działa, a czego nikt nie sprawdził. `docs/historia/` — NIE czytać.
 
 ---
@@ -53,10 +53,10 @@ nigdy nie została poprawnie rozpoczęta dla dwóch graczy.
    wołany na nullu z timera zdrowia. Stos identyczny 03:18/03:25/14:41.
    Bliźniak `SetSpawnBehaviour` jest strzeżony od dawna — awaria przeniosła
    się na niestrzeżonego bliźniaka. Stąd strażnik `fix_smycz` (wdrożony,
-   patrz niżej). Pełny zapis: `WIEDZA.md` „Próba kontrolna hipotezy 28".
+   patrz niżej). Pełny zapis: `KNOWLEDGE.md` „Próba kontrolna hipotezy 28".
 
 Do tego zjawisko trzecie, zaobserwowane po przebiegu (hipoteza 32,
-`DZIENNIK.md`): **host paruje wątek gry ~50 s po zerwaniu połączenia**
+`JOURNAL.md`): **host paruje wątek gry ~50 s po zerwaniu połączenia**
 (`futex_wait` bez limitu, render dalej rysuje — „241 FPS a stoi"), dokładnie
 w pierwszym 30-sekundowym takcie napełniania po tym, jak kontroler klienta
 został „bez Player". Gracz: „to się zawsze działo".
@@ -144,7 +144,7 @@ Przebudowa i wdrożenie: `tools/wdroz-dll.sh` (gry muszą być zamknięte).
 | | dowód |
 |---|---|
 | obaj gracze w jednym świecie, broń klienta działa | ponad dwie godziny wspólnej gry 11.08 |
-| hipoteza 28 rozstrzygnięta: host zdrowy bez trampolin, winowajca śmierci klienta wskazany co do instrukcji | próba kontrolna 14:39–14:49, `WIEDZA.md` |
+| hipoteza 28 rozstrzygnięta: host zdrowy bez trampolin, winowajca śmierci klienta wskazany co do instrukcji | próba kontrolna 14:39–14:49, `KNOWLEDGE.md` |
 | host bez duplikatu ekwipunku (`fix_dup`) | gracz: „host działa jak na singleplayer" |
 | mapa atrybutów ruchu klienta (`fix_attrs`) | `przed=0.000 po=355.000` |
 | host nasłuchuje **także w hubie** | żywy `IpNetDriver` przy hoście w hubie, 12.08 |

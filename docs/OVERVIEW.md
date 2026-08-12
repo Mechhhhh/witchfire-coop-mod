@@ -51,7 +51,7 @@ W Unreal Engine jest do tego mechanizm pierwszej klasy — `ServerTravel`
 (ewentualnie seamless travel) — który przenosi WSZYSTKICH podłączonych graczy
 i wykonuje sekwencję startu poziomu po stronie serwera. Gra go nie używa, bo
 jest jednoosobowa. To jest ten sam wzorzec co wszystkie dotychczasowe ściany
-(`WIEDZA.md` §4), tylko na poziomie **przepływu poziomów**, a nie pojedynczego
+(`KNOWLEDGE.md` §4), tylko na poziomie **przepływu poziomów**, a nie pojedynczego
 obiektu.
 
 **Konsekwencja dla priorytetów:** część objawów, które rozbieraliśmy osobno,
@@ -133,7 +133,7 @@ obsługiwać połączenia i netdriver je zamyka. Klient zostaje z nieważnym
 `IpConnection` i czarnym ekranem, a po wyrzuceniu wraca do własnej gry
 jednoosobowej.
 
-**Następny krok jest w `DZIENNIK.md` jako hipoteza 28:** próba kontrolna bez
+**Następny krok jest w `JOURNAL.md` jako hipoteza 28:** próba kontrolna bez
 `fix_lista` i `fix_ekwipunek`. Gracz potwierdził, że **wcześniej host nie
 zamarzał**, a obie te trampoliny doszły tego samego wieczoru i siedzą w pętlach
 wykonujących się przy dołączaniu. Dopóki to nie jest rozstrzygnięte, każdy inny
@@ -219,7 +219,7 @@ dopóki hipoteza 28 nie jest rozstrzygnięta.**
 
 | # | co | stan |
 |---|---|---|
-| C1 | magazynek klienta zostaje zerem, broń przeładowuje się w pętli | hipoteza 24, mechanizm rozebrany (`WIEDZA.md` §3g) |
+| C1 | magazynek klienta zostaje zerem, broń przeładowuje się w pętli | hipoteza 24, mechanizm rozebrany (`KNOWLEDGE.md` §3g) |
 | C2 | ruch klienta cofa (maszyna stanów stoi w `Idle`) | hipoteza 23, połowa naprawiona (`fix_czas`), blokuje `IsOnGround` |
 | C3 | stamina klienta podobno się nie odnawia | hipoteza 21, **niepotwierdzone** — liczba `522,8` okazała się `615 × 0,85`, nie mnożnikiem staminy |
 

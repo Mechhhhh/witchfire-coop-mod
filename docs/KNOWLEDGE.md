@@ -134,7 +134,7 @@ jest pomiarem zawartości.** Wypisywać nazwy.
 
 Drugi zmierzony fakt: **klient ma dwa HandCannony przypisane do własnej postaci**
 (`MyPawn` obu wskazuje na nią) — jeden zreplikowany z serwera, drugi zrobiony
-lokalnie. To ten sam podwójny komplet broni, który opisano w `BRON.md`, tylko
+lokalnie. To ten sam podwójny komplet broni, który opisano w `WEAPONS.md`, tylko
 widziany od strony klienta. Wyjaśnia „mam jedną broń i nie mogę przełączać":
 lokalny komplet nie jest tym, który zna serwer.
 
@@ -1210,7 +1210,7 @@ nie psuje; zerem jest wartość **bazowa** z pustej mapy.
 | BoltActionRifle `_2147472769` | klient | kontroler | 244 |
 
 Host ma **dwie** bronie, klient **cztery** — i to jest ten sam podwójny komplet,
-który opisano w `BRON.md` (wynik 2), tylko widziany po stronie serwera.
+który opisano w `WEAPONS.md` (wynik 2), tylko widziany po stronie serwera.
 Najważniejsze: **klient trzyma pusty duplikat**, a poprawnie napełniona broń
 z sześcioma nabojami leży schowana. To wprost tłumaczy „NO AMMO" i zapętlone
 przeładowanie: gracz przeładowuje broń, która nie jest tą z amunicją.
@@ -1465,7 +1465,7 @@ Wybór kontrolera robi `0x1418718E0`, wołana z `0x141903067` z argumentem w `rs
 funkcja idzie po łańcuchu obiektów nadrzędnych, więc zwraca kontroler wynikający
 z tego, **co dostała na wejściu**. Ustalenie, czym jest to wejście w pierwszym
 przebiegu, jest ostatnim brakującym ogniwem — i musi to zmierzyć **hak
-w procesie**, nie pułapka sprzętowa (patrz zasada 12 w `START-TUTAJ.md`).
+w procesie**, nie pułapka sprzętowa (patrz zasada 12 w `START-HERE.md`).
 
 **Wynik negatywny, wart zapisania:** `+0xD8` w komponencie maszyny stanów **nie
 jest** polem stanu bieżącego — dla broni hosta, broni klienta i broni schowanej
@@ -2030,7 +2030,7 @@ ich pętle nie będą przepisane na tanie (zasada 7).
   na konkretnym thunku to wzorzec od dawna przyjęty i działający.
 
 Naprawa: strażnik nulla na `0x141B7DDA0`, marker `fix_smycz`, licznik pominięć
-(hipoteza 31 w `DZIENNIK.md`).
+(hipoteza 31 w `JOURNAL.md`).
 
 **Obserwacje uboczne, każda potwierdzona pomiarem tego przebiegu:**
 
@@ -2100,7 +2100,7 @@ i zalogowac WEJSCIA obu `minss` osobno — czyli wyniki `0x141B25D10`
 i `0x141B25AA0` — dla broni hosta i dla broni klienta w jednym przebiegu.
 Ktora z tych dwoch liczb jest zerem u klienta, ta wskazuje wlasciwa przyczyne.
 Obie funkcje dotykaja `CurrentAmmoInClip`, `CurrentAmmo` oraz
-`Cheat.InfiniteClip` (`WIEDZA.md` §3d), wiec zgadywanie po nazwach juz raz
+`Cheat.InfiniteClip` (`KNOWLEDGE.md` §3d), wiec zgadywanie po nazwach juz raz
 zawiodlo.
 
 **Sprint:** w tym przebiegu zero wystapien `GetMaxSpeed = 800` i zero udanych
@@ -2266,7 +2266,7 @@ broń dałoby się wystrzelić. Pomiar przyznał mu rację i **`AmmoInClip = 0` 
 w serwerowej kopii broni klienta**, przy `6` u hosta. Zero po stronie serwera nie
 może być usterką wyświetlania.
 
-Wniosek poprawiony i przeniesiony do `WIEDZA.md` §3a: klient nie dostaje pełnej
+Wniosek poprawiony i przeniesiony do `KNOWLEDGE.md` §3a: klient nie dostaje pełnej
 inicjalizacji gracza. Twardy ślad liczbowy: `ActivatableAbilities` ma **10**
 pozycji u hosta i **8** u klienta — tak samo po stronie serwera, więc to brak
 nadania, nie zgubiona replikacja. Ładowanie amunicji jest w tej grze zdolnością
@@ -2298,7 +2298,7 @@ w broni, nie życie w atrybucie.
 
 **Kanał POPRAWIONY i WDROŻONY (11.08, 18:25).** Biblioteka zbudowana bez
 ostrzeżeń i skopiowana do katalogu gry (`md5=33e5aa5b`). Trzy zmiany, wszystkie
-z rozbioru obrazu, nie z domysłu (`WIEDZA.md`, „ROZBIÓR OBRAZU 11.08"):
+z rozbioru obrazu, nie z domysłu (`KNOWLEDGE.md`, „ROZBIÓR OBRAZU 11.08"):
 
 1. definicję akcji kopiujemy **operatorem przypisania gry** `0x1417A3E50` —
    poprzedni `memcpy` zabierał grze odwołanie do `TSharedPtr` przy każdym
@@ -2331,14 +2331,14 @@ nie jest), a cały `DimensionStateMachineComponent` ma 47 funkcji i **zero RPC**
 Dowód ruchem: serwerowa kopia klienta nie opuszcza `Idle`, gdy klient przechodzi
 u siebie przez pięć stanów.
 
-Hipotezy 7–10 zamknięte 11.08 — wyniki w `WIEDZA.md`:
+Hipotezy 7–10 zamknięte 11.08 — wyniki w `KNOWLEDGE.md`:
 **7 i 8 potwierdzone** (naprawa mapy atrybutów działa, klient chodzi; strażnik
 duplikatu drugi raz z rzędu), **9 potwierdzona** (serwer ani razu nie policzył
 prędkości sprintu ani ślizgu — przy ślizgu widzi samo kucanie, 265),
 **10 obalona** (dash zgadza się co do dziesiętnych, więc symulacja i tor ruchu
 są zgodne — rozjeżdża się wyłącznie prędkość maksymalna wynikająca ze stanu).
 
-Hipotezy 4, 5 i 6 zamknięte w przebiegu 01:11 — wyniki w `WIEDZA.md`:
+Hipotezy 4, 5 i 6 zamknięte w przebiegu 01:11 — wyniki w `KNOWLEDGE.md`:
 **4 obalona** (wszystkie trzy znaczniki blokady zerowe, a limit i tak 0.000),
 **5 potwierdzona i doprecyzowana** (13 z 19 wartości w mapie wyzerowanych, przy
 poprawnych atrybutach w ASC — psuje się wyłącznie podręczna kopia),
@@ -2349,13 +2349,13 @@ przed pomiarem**: postać klienta ma na serwerze komplet 11 zestawów atrybutów
 i `DimensionMovementAttribSet` z poprawnymi `SprintSpeed=800`, `Acceleration=2000`,
 `NormalSpeed=615` — identycznie jak host.
 
-Hipotezy 1–3 zamknięte 10.08 wieczorem — wyniki w `WIEDZA.md`:
+Hipotezy 1–3 zamknięte 10.08 wieczorem — wyniki w `KNOWLEDGE.md`:
 **1 obalona** (broń klienta jest zdrowa, przyczyną braku ruchu jest pusta mapa
 atrybutów ruchu), **2 obalona** (to host ma dwa duplikaty, nie klient dwa braki),
 **3 rozstrzygnięta** (`0x141923AA0` = gniazdo 99 `DimensionItemStorage`;
 podwójne napełnianie potwierdzone hakiem).
 
-Wszystko, co dziś rozstrzygnięte, jest w `WIEDZA.md`. Poniżej zostają tylko
+Wszystko, co dziś rozstrzygnięte, jest w `KNOWLEDGE.md`. Poniżej zostają tylko
 lekcje metodyczne, bo dotyczą sposobu pracy, a nie samej gry.
 
 ### ZASADA: pułapka sprzętowa NIE w trakcie dołączania klienta
