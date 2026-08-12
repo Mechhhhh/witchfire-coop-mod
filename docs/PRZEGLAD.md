@@ -91,10 +91,10 @@ Nowy kamień milowy, zastępujący dotychczasowe M2/M3 w kolejności:
 **M1′ — sesja żyje w hubie i przeżywa podróż tam i z powrotem.**
 
 Dwa kroki, w tej kolejności:
-1. **Dołączenie w hubie.** Ustalić, czemu dziś nie działa: czy host w ogóle
-   nasłuchuje na mapie hubu (łatka `always_listen` działa przy każdym
-   `LoadMap`, więc powinien), czy klient jest odrzucany przy `Login`, czy
-   dochodzi i nie dostaje pionka.
+1. **Dołączenie w hubie.** Częściowo zmierzone 12.08: host **nasłuchuje także
+   w hubie** (żywy `IpNetDriver`), klient **dochodzi w pełni** (`PostLogin`,
+   własny pionek `Role=2`, widzi pionek hosta `Role=1`). Zostaje jedna rzecz:
+   **host zamarza w chwili połączenia** — hipoteza 28, próba kontrolna czeka.
 2. **`ServerTravel` zamiast lokalnego ładowania.** Znaleźć, czym gra startuje
    wyprawę i czym wraca do hubu, i podmienić na podróż sesyjną.
 
@@ -102,6 +102,14 @@ Dopiero po tym ma sens wracać do amunicji i ruchu — bo oba mogą być skutkam
 tego, że sesja nigdy nie została poprawnie rozpoczęta dla dwóch graczy.
 
 ### 0b. ZMIERZONE 12.08 03:24 — dołączenie w hubie to TIMEOUT, nie odrzucenie
+
+> **KOREKTA z 03:32, przeczytaj PRZED resztą tej sekcji.** Poniższy wywód kończy
+> się wnioskiem „klient milknie". **Ten wniosek jest BŁĘDNY.** Zrzut ekranu od
+> gracza pokazał, że to **HOST zamarza** (czarny ekran, 4 FPS, zegar stanął na
+> `03:25:05`) — dokładnie w sekundzie, w której powstało połączenie (`03:25:04`).
+> Klient milczał, bo nie miał do kogo mówić, a po wyrzuceniu wrócił do własnego
+> singleplayera i działał normalnie (247 FPS). Same LICZBY poniżej są dobre;
+> błędna jest tylko przypisana im przyczyna. Otwarta hipoteza: **28**.
 
 Śledzenie `ClientConnections` sterownika sieciowego hosta (offset `+0x90`,
 znaleziony refleksją) co pół sekundy, w trakcie dołączania klienta w hubie:
@@ -118,24 +126,26 @@ półsekundowego próbkowania.
 
 **Co to znaczy.** Dołączenie NIE jest odrzucane i NIE zawodzi logowanie.
 Klient przechodzi pełną drogę: dostaje własny pionek (`Role=2`) i widzi pionek
-hosta (`Role=1`), czyli `PostLogin` po stronie serwera się wykonał. Potem
-**milknie** — przez 60 s nie wysyła nic — i serwer zamyka połączenie. Klient
-zostaje z nieważnym `IpConnection` i czarnym ekranem.
+hosta (`Role=1`), czyli `PostLogin` po stronie serwera się wykonał.
 
-Proces klienta przy tym **żyje i zjada takty** (~9,5% w chwili pomiaru), więc
-to nie jest zawieszenie na twardo. Jest czymś zajęty i przestaje obsługiwać
-sieć.
+**Potem zamarza HOST** (patrz korekta wyżej), więc przez 60 s nie ma kto
+obsługiwać połączenia i netdriver je zamyka. Klient zostaje z nieważnym
+`IpConnection` i czarnym ekranem, a po wyrzuceniu wraca do własnej gry
+jednoosobowej.
 
-**Następny krok:** próbka stosu wątku gry klienta w trakcie tych 60 s
-(`tools/stos-watku.py`) — pokaże, czym jest zajęty. Nie wymaga przebudowy
-biblioteki.
+**Następny krok jest w `DZIENNIK.md` jako hipoteza 28:** próba kontrolna bez
+`fix_lista` i `fix_ekwipunek`. Gracz potwierdził, że **wcześniej host nie
+zamarzał**, a obie te trampoliny doszły tego samego wieczoru i siedzą w pętlach
+wykonujących się przy dołączaniu. Dopóki to nie jest rozstrzygnięte, każdy inny
+pomiar przy dołączaniu jest niewiarygodny.
 
-Podejrzenie do sprawdzenia, NIE ustalenie: klient utknął na strumieniowaniu
-podpoziomów. Za tym przemawia to, że obiekty `World` po obu stronach mają różne
-nazwy (`Base_Shortcuts` u hosta, `Base_Geometry` u klienta) — to wyglądają na
-nazwy podpoziomów, a nie poziomu trwałego.
+### 0c. Klient nie potwierdza objęcia pionka — najpewniej SKUTEK, nie przyczyna
 
-### 0c. NAJKONKRETNIEJSZY TROP — klient nie potwierdza objęcia pionka
+> **KOREKTA z 03:32.** Ta obserwacja jest prawdziwa jako odczyt, ale opisany
+> niżej łańcuch przyczynowy jest odwrócony: host zamarza **zanim** zdąży
+> dokończyć uścisk dłoni, więc brak potwierdzenia jest skutkiem zamrożenia.
+> **Nie kłaść markera `log_objecie` przed rozstrzygnięciem hipotezy 28** — hak
+> mierzyłby objaw.
 
 Odczyt stanu klienta w chwili czarnego ekranu (po wyrzuceniu przez host):
 
@@ -164,10 +174,10 @@ jego własnej grze jednoosobowej — warto sprawdzić, czy nie przeszkadza.
 **Czego to NIE tłumaczy:** dlaczego host przy dołączeniu wypada do menu bez
 myszy i wraca do hubu sam. To osobny objaw, zgłoszony przez gracza 12.08.
 
-**Następny krok:** ustalić, czy `ClientRestart` w ogóle dochodzi do klienta.
-To `UFunction` wołana przez serwer na kontrolerze — czyli sprawdzalna hakiem na
-gnieździe, tą samą metodą, którą działa `fix_weapon`. Nie wymaga niczego
-nowego mechanicznie.
+**Hak jest napisany i czeka w kodzie** (`patchObjecieLog`, marker
+`log_objecie`): podgląda obie połowy uścisku — `ClientRestart` po stronie
+klienta i `ServerAcknowledgePossession` po stronie hosta. **Nie kłaść markera,
+dopóki hipoteza 28 nie jest rozstrzygnięta.**
 
 ### A. Walka i przeżycie — NIC NIE SPRAWDZONE
 

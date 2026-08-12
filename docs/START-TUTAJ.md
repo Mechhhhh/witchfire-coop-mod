@@ -75,7 +75,11 @@ zmierzono 64 s przy `ConnectionTimeout = 60 s`.
 
 ## Stan wdrożenia
 
-Biblioteka **wdrożona**, `md5=8ed4a803` — zgodna ze źródłem w repo.
+Biblioteka **wdrożona**, `md5=8ed4a803`. Zgodność ze źródłem sprawdzona
+**napisami**, nie sumą: build nie jest powtarzalny (mingw wpisuje znacznik czasu
+w nagłówek PE), więc dwa buildy tego samego źródła mają różne md5. We wdrożonym
+pliku są wszystkie napisy z ostatniej zmiany (`OBJECIE:`, `EKWIPUNEK: straznik`,
+`LISTA: straznik`, `CZAS: wywolan`), a rozmiar zgadza się co do bajta.
 
 **Markery hosta:** `always_listen`, `auto_host`, `fix_attrs`, `fix_booster`,
 `fix_dup`, `fix_input`, `late_restart`, `map`, `no_pause`, `swap_now`,
