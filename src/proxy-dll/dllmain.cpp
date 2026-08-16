@@ -254,6 +254,7 @@ static SetClientTravelFn g_setClientTravel = nullptr;
 // chcemy wolac GetModuleHandle przy kazdym wywolaniu.
 static void wfcoopWyjmijBron(uintptr_t base);
 static void tikTrybGry(uintptr_t base);
+static void tikGlobalneWejscie(uintptr_t base);
 static void kanalTick(uintptr_t base);
 static void tikNapelniania(uintptr_t base);
 static void tikWarunkuRuchu(uintptr_t base);
@@ -272,6 +273,12 @@ extern "C" void wfcoopOnGameThread()
     // na kodzie gry. Musi isc PRZED wyjsciem travelowym ponizej, inaczej
     // wykonaloby sie tylko raz.
     if (g_bazaModulu) tikTrybGry(g_bazaModulu);
+
+    // Zapalenie globalnej flagi wejscia, ktorej klient sam nie zapala
+    // (WIEDZA §3x). Tez z watku gry, bo idzie przez `ProcessEvent`. Tez PRZED
+    // wyjsciem travelowym — inaczej wykonaloby sie tylko raz, a my musimy
+    // czekac, az flaga bedzie zgaszona przez dluzsza chwile.
+    if (g_bazaModulu) tikGlobalneWejscie(g_bazaModulu);
 
     // Kanal stanu ruchu MUSI isc stad, a nie z watku pulsu: wysylka to
     // `ProcessEvent` -> siec, czyli kod gry. Wolanie go z obcego watku bylo juz
@@ -5090,6 +5097,205 @@ static bool               g_logRozdzielacz = false;   // marker `WFCoop_log_rozd
 static volatile unsigned* g_rozdzWejscie   = nullptr; // A: wejscia do 0x143820F10
 static volatile unsigned* g_rozdzKontroler = nullptr; // B: dotarlo do PC::InputKey
 
+// ── NAPRAWA GLOBALNEJ FLAGI WEJSCIA (marker `WFCoop_fix_globalne.txt`) ─────
+//
+// Przyczyna (WIEDZA §3x, pomiar 17.08 z proba kontrolna): gra gasi globalne
+// wejscie na czas ladowania mapy i sama je przywraca. Host robi jedno
+// i drugie, klient TYLKO PIERWSZE — u niego `SetGlobalInputEnabled(true)` nie
+// przychodzi nigdy, ani przy starcie, ani po dolaczeniu.
+//
+// Wolamy wiec te sama funkcje, ktorej uzywa gra: `SetGlobalInputEnabled`
+// z `DimensionGameInstance`, `Native, BlueprintCallable`, sygnatura
+// potwierdzona na zywej grze (`ue-funcs.py --sygnatury`): `(Bool bInEnabled)`.
+// Zasada 1 spelniona w obu polowach — znana sygnatura i droga, ktora gra sama
+// chodzi (`ProcessEvent`).
+//
+// NIE zapisujemy bajta pod `GameInstance+0x2A0`. Sprawdzone (§3w): flaga ma
+// lancuch powiadomien (`OnGlobalInputEnabledValueChanged` osobno na postaci
+// i na broni), wiec surowy zapis niczego nie odtwarza i ruchu nie odblokowuje.
+//
+// OSTROZNOSC, bez ktorej latka bylaby szkodliwa: gra gasi te flage LEGALNIE
+// na czas ladowania. Gdybysmy zapalali ja natychmiast, wchodzilibysmy grze
+// w ladowanie. Dlatego dzialamy dopiero, gdy flaga stoi na zerze przez
+// KILKA KOLEJNYCH sprawdzen — to odroznia „wylaczona na chwile, bo trwa
+// ladowanie" od „wylaczona i zapomniana".
+//
+// U hosta ta latka nie zrobi nic i to jest jej wbudowana proba kontrolna:
+// tam flaga jest 1, wiec warunek nigdy nie jest spelniony.
+static bool      g_fixGlobalne     = false;   // marker `WFCoop_fix_globalne.txt`
+static uintptr_t g_ufGlobalInput   = 0;       // UFunction SetGlobalInputEnabled
+static unsigned  g_globNaprawWolan = 0;       // ile razy zawolalismy
+static int       g_globZeroZRzedu  = 0;       // ile sprawdzen z rzedu flaga = 0
+static ULONGLONG g_globNastepne    = 0;
+
+// Szukamy po nazwie ORAZ po wlascicielu. Samo imie nie wystarcza: w grze jest
+// tez `WBP_Items_CustomPerksPanel_C:OnGlobalInputEnabled` o innej sygnaturze,
+// a pomylka konczylaby sie zla ramka (ten sam powod co przy `SetInputMode`).
+static uintptr_t znajdzUFGlobalInput(uintptr_t base)
+{
+    const uintptr_t tab = base + addr::GUObjectArray_OFF + 0x10;
+    const uintptr_t chunks = *(const uintptr_t*)tab;
+    const int32_t ile    = *(const int32_t*)(tab + 0x14);
+    const int32_t nchunk = *(const int32_t*)(tab + 0x1C);
+    if (!sensownyWsk(chunks) || ile <= 0 || nchunk <= 0) return 0;
+
+    char nazwa[128], nazwaKl[128], nazwaWl[128];
+    for (int32_t ci = 0; ci < nchunk; ++ci) {
+        const uintptr_t blok = ((const uintptr_t*)chunks)[ci];
+        if (!sensownyWsk(blok)) continue;
+        int32_t tu = ile - ci * 65536;
+        if (tu > 65536) tu = 65536;
+        if (tu <= 0) break;
+        for (int32_t i = 0; i < tu; ++i) {
+            const uintptr_t obj = *(const uintptr_t*)(blok + (uintptr_t)i * 0x18);
+            if (!sensownyWsk(obj)) continue;
+            const uintptr_t klasa = *(const uintptr_t*)(obj + UOBJ_CLASS_OFF);
+            if (!nazwaObiektu(base, klasa, nazwaKl, sizeof nazwaKl)) continue;
+            if (strcmp(nazwaKl, "Function") != 0) continue;
+            if (!nazwaObiektu(base, obj, nazwa, sizeof nazwa)) continue;
+            if (strcmp(nazwa, "SetGlobalInputEnabled") != 0) continue;
+            const uintptr_t wl = *(const uintptr_t*)(obj + UOBJ_OUTER_OFF);
+            if (!sensownyWsk(wl) || !nazwaObiektu(base, wl, nazwaWl, sizeof nazwaWl)) continue;
+            if (strcmp(nazwaWl, "DimensionGameInstance") == 0) return obj;
+        }
+    }
+    return 0;
+}
+
+// Zywa instancja gry.
+//
+// UWAGA, kosztowalo to jeden przebieg: klasa zywego obiektu to
+// **`BPDimensionGameInstance_C`**, czyli BLUEPRINTOWA PODKLASA, a nie
+// `DimensionGameInstance`. Porownanie dokladne trafialo wiec wylacznie we
+// wzorzec klasy natywnej — ktory i tak pomijamy — i latka nigdy nie znalazla
+// na czym pracowac. Dopasowujemy po FRAGMENCIE nazwy, zeby objac oba warianty.
+//
+// Wzorzec klasy (`Default__`) pomijamy: pisanie do niego byloby bezcelowe,
+// a przy okazji trulo by wszystkie nastepne swiaty.
+static uintptr_t znajdzGameInstance(uintptr_t base)
+{
+    const uintptr_t tab = base + addr::GUObjectArray_OFF + 0x10;
+    const uintptr_t chunks = *(const uintptr_t*)tab;
+    const int32_t ile    = *(const int32_t*)(tab + 0x14);
+    const int32_t nchunk = *(const int32_t*)(tab + 0x1C);
+    if (!sensownyWsk(chunks) || ile <= 0 || nchunk <= 0) return 0;
+
+    char nazwa[128], nazwaKl[128];
+    for (int32_t ci = 0; ci < nchunk; ++ci) {
+        const uintptr_t blok = ((const uintptr_t*)chunks)[ci];
+        if (!sensownyWsk(blok)) continue;
+        int32_t tu = ile - ci * 65536;
+        if (tu > 65536) tu = 65536;
+        if (tu <= 0) break;
+        for (int32_t i = 0; i < tu; ++i) {
+            const uintptr_t obj = *(const uintptr_t*)(blok + (uintptr_t)i * 0x18);
+            if (!sensownyWsk(obj)) continue;
+            const uintptr_t klasa = *(const uintptr_t*)(obj + UOBJ_CLASS_OFF);
+            if (!nazwaObiektu(base, klasa, nazwaKl, sizeof nazwaKl)) continue;
+            if (!strstr(nazwaKl, "DimensionGameInstance")) continue;
+            if (!nazwaObiektu(base, obj, nazwa, sizeof nazwa)) continue;
+            if (strncmp(nazwa, "Default__", 9) == 0) continue;
+            return obj;
+        }
+    }
+    return 0;
+}
+
+// Offset flagi z gettera `IsGlobalInputEnabled` -> `0x1418785C0`:
+//   movzx eax, byte ptr [rcx + 0x2a0]; ret
+static constexpr uintptr_t GI_GLOBALINPUT_OFF = 0x2A0;
+
+// Offsety odczytywane, zeby wiedziec, CZY jest co naprawiac. Oba potwierdzone
+// odczytem z zywej gry po obu stronach.
+static constexpr uintptr_t PAWN_GAMEPLAY_ENABLED_OFF = 0x173C;  // BP `GameplayEnabled`
+static constexpr uintptr_t PC_PAWN_OFF               = 0x250;   // refleksja: `Pawn`
+
+// Jedno wywolanie `SetGlobalInputEnabled(wartosc)` przez `ProcessEvent`.
+static bool wolajGlobalInput(uintptr_t base, uintptr_t gi, bool wartosc)
+{
+    if (!g_ufGlobalInput) {
+        g_ufGlobalInput = znajdzUFGlobalInput(base);
+        if (!g_ufGlobalInput) {
+            logLine("GLOBALNE-FIX: nie znalazlem UFunction SetGlobalInputEnabled");
+            return false;
+        }
+        logLine("GLOBALNE-FIX: UFunction SetGlobalInputEnabled = 0x%llX",
+                (unsigned long long)g_ufGlobalInput);
+    }
+    if (!gniazdoSensowne((void*)gi, addr::SLOT_PROCESS_EVENT, "ProcessEvent(GI)")) return false;
+
+    // Parametr: jeden `Bool` (`bInEnabled`), sygnatura potwierdzona na zywej
+    // grze. Bufor z zapasem i wyzerowany — gdyby ramka byla szersza, niz mowi
+    // refleksja, `ProcessEvent` nie przeczyta smieci.
+    unsigned char par[16] = {};
+    par[0] = wartosc ? 1 : 0;
+
+    using PEFn = void(__fastcall*)(void*, void*, void*);
+    auto** vt = *(void***)gi;
+    ((PEFn)vt[addr::SLOT_PROCESS_EVENT])((void*)gi, (void*)g_ufGlobalInput, &par);
+    return true;
+}
+
+static void tikGlobalneWejscie(uintptr_t base)
+{
+    if (!g_fixGlobalne) return;
+    if (g_globNaprawWolan >= 20) return;          // budzet, zeby nie walic w kolko
+    const ULONGLONG teraz = GetTickCount64();
+    if (teraz < g_globNastepne) return;
+    g_globNastepne = teraz + 2000;                // przemial tablicy najwyzej co 2 s
+
+    const uintptr_t gi = znajdzGameInstance(base);
+    if (!gi) return;
+    const unsigned char flaga = *(const unsigned char*)(gi + GI_GLOBALINPUT_OFF);
+
+    // Czy pionek juz wie, ze wejscie jest wlaczone. Powiadomienie
+    // `OnGlobalInputEnabledValueChanged` ustawia mu `GameplayEnabled`, wiec to
+    // jest sprawdzian, czy do NIEGO doszlo — a nie tylko czy flaga stoi dobrze.
+    bool pionekWie = true;
+    const uintptr_t pc = znajdzKontrolerLokalny(base);
+    if (pc) {
+        const uintptr_t pionek = *(const uintptr_t*)(pc + PC_PAWN_OFF);
+        if (sensownyWsk(pionek))
+            pionekWie = *(const unsigned char*)(pionek + PAWN_GAMEPLAY_ENABLED_OFF) != 0;
+    }
+
+    if (flaga && pionekWie) { g_globZeroZRzedu = 0; return; }   // wszystko dobrze
+
+    // Pieciokrotnie z rzedu to 10 sekund — u hosta przerwa na ladowanie trwala
+    // 15 s, wiec prog jest ciasny. Gdyby okazal sie za ciasny i latka wchodzila
+    // grze w ladowanie, podniesc TU, a nie kombinowac gdzie indziej.
+    if (++g_globZeroZRzedu < 5) return;
+
+    // ISTOTNE: gdy flaga JUZ stoi na 1, samo `SetGlobalInputEnabled(true)` nie
+    // zrobi nic. Setter rozglasza powiadomienie WYLACZNIE przy zmianie
+    // (`cmp al,dl; je` w `0x1418953E0`). A pionek klienta powstaje PO travelu,
+    // czyli gdy flaga juz jest 1 — i dlatego zadne powiadomienie do niego nie
+    // dochodzi, mimo ze globalnie wszystko wyglada dobrze. Zmierzone 17.08:
+    // `GlobalInputEnabled=1`, a `GameplayEnabled` pionka dalej 0.
+    //
+    // Dlatego PRZELACZAMY, a nie ustawiamy: false, potem true. Obie wartosci
+    // ta sama funkcja, ktorej gra sama uzywa.
+    if (flaga) {
+        if (!wolajGlobalInput(base, gi, false)) return;
+    }
+    if (!wolajGlobalInput(base, gi, true)) return;
+
+    ++g_globNaprawWolan;
+    const unsigned char po = *(const unsigned char*)(gi + GI_GLOBALINPUT_OFF);
+    unsigned pgEnab = 2;
+    if (pc) {
+        const uintptr_t pionek = *(const uintptr_t*)(pc + PC_PAWN_OFF);
+        if (sensownyWsk(pionek))
+            pgEnab = *(const unsigned char*)(pionek + PAWN_GAMEPLAY_ENABLED_OFF);
+    }
+    logLine("GLOBALNE-FIX: przelaczone (%s) na 0x%llX (wywolanie %u), "
+            "flaga=%u GameplayEnabled pionka=%u",
+            flaga ? "false->true" : "true", (unsigned long long)gi,
+            g_globNaprawWolan, (unsigned)po, pgEnab);
+    g_globZeroZRzedu = 0;
+}
+
+
 // ── GLOBALNA FLAGA WEJSCIA (marker `WFCoop_log_globalne.txt`) ──────────────
 //
 // Po co: `GameInstance + 0x2A0` to `GlobalInputEnabled` — u hosta 1, u klienta
@@ -5700,6 +5906,21 @@ static DWORD WINAPI worker(LPVOID)
                     "wejscia na pietrze Win32 i na pietrze gry");
         } else {
             logLine("WEJSCIE-LICZNIK: brak markera WFCoop_log_wejscie.txt — nie licze");
+        }
+    }
+
+    // Naprawa globalnej flagi wejscia (hipoteza 43). Osobny marker od loga,
+    // zeby dalo sie zrobic przebieg kontrolny: potwierdzamy przez ZDJECIE
+    // markera — bez niego klient ma znowu stac (zasada 9).
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_fix_globalne.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_fixGlobalne = true;
+            logLine("GLOBALNE-FIX: marker WFCoop_fix_globalne.txt — bede zapalal "
+                    "globalna flage wejscia, gdy zgasnie na dluzej");
+        } else {
+            logLine("GLOBALNE-FIX: brak markera WFCoop_fix_globalne.txt — nie latam");
         }
     }
 

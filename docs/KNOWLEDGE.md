@@ -3257,3 +3257,83 @@ Wywołać `SetGlobalInputEnabled(true)` na instancji gry klienta po dołączeniu
 to `Native, BlueprintCallable`, czyli droga, której gra sama używa (zasada 1
 spełniona). **Nie zapisem bajta**: sprawdzone, surowy zapis nie odtwarza
 powiadomień i nie odblokowuje ruchu (§3w).
+
+
+## 3y. Obserwacja gracza (17.08): host wraca do MENU, gdy klient dołącza
+
+Gracz zgłosił coś, czego dotąd nigdzie nie zapisaliśmy, a co tłumaczy część
+kosztu każdego przebiegu:
+
+> „hostowi odpala się menu główne, jak mu mapę przeładowuje, ale wątpię że to
+> coś zmienia, bo po continue pojawia się w tym samym miejscu i klient, jak
+> dołączy, widzi go tam, gdzie był przed menu"
+
+Czyli **dołączenie klienta przeładowuje mapę u HOSTA i wyrzuca go do menu
+głównego.** Po `CONTINUE` host wraca w to samo miejsce, a klient widzi go tam,
+gdzie był — więc dla stanu świata skutków nie widać.
+
+**Dlaczego mimo to warto to mieć zapisane:**
+
+* tłumaczy, czemu przy każdym przebiegu gracz musi klikać `CONTINUE` **dwa
+  razy** — to nie jest przypadek ani nasza pomyłka;
+* każde przeładowanie mapy u hosta gasi i zapala globalną flagę wejścia
+  (§3x), więc host ma w logu więcej par wyłącz/włącz, niż wynikałoby z jego
+  własnego startu. Przy czytaniu licznika `GLOBALNE` trzeba o tym pamiętać;
+* jeśli kiedyś okaże się, że coś u hosta gubi się przy dołączaniu klienta, to
+  jest pierwszy podejrzany — przeładowanie mapy niszczy i odtwarza aktorów.
+
+Gracz uważa, że dla samego wejścia to bez znaczenia, i na dziś nic temu nie
+przeczy. Zapisane jako obserwacja, nie jako hipoteza.
+
+## 3z. KOREKTA §3x — globalna flaga to JEDNA z dwóch przyczyn, nie jedyna
+
+Łatka `fix_globalne` **działa i jest potrzebna**, ale przebieg 17.08 00:36–00:40
+pokazał, że nie wystarcza. Trzeba to zapisać dokładnie, bo §3x brzmiał zbyt
+pewnie.
+
+### Co łatka naprawia — potwierdzone
+
+Przed dołączeniem klienta, na jego własnym świecie:
+
+```
+00:37:24  GLOBALNE-FIX: przelaczone (true) ... flaga=1  GameplayEnabled pionka=1
+```
+
+i licznik wiązania ruchu **rusza z zera** (`wejscieA` 2056 → 2677 w 2 s, ~300/s).
+To jest realna naprawa realnej usterki: klient sam nigdy nie zapalał globalnej
+flagi, a po zapaleniu wiązanie zaczyna dispatchować.
+
+Przy okazji potwierdzone, czemu trzeba PRZEŁĄCZAĆ, a nie ustawiać: setter
+rozgłasza powiadomienie wyłącznie przy zmianie (`cmp al,dl; je`), a pionek
+powstały po travelu zastaje flagę już zapaloną i nic do niego nie dochodzi.
+
+### Czego łatka NIE naprawia — druga przyczyna
+
+Po travelu do hosta licznik **zamiera** (`wejscieA` stoi na 12913) mimo że:
+
+| | klient po dołączeniu |
+|---|---|
+| `GlobalInputEnabled` | **1** (łatka trzyma) |
+| `GameplayEnabled` pionka | 0, a po podstawieniu **1** |
+| `wejscieA` | **zamrożone, nie rośnie** |
+
+Podstawiono `GameplayEnabled = 1` przy zapalonej fladze — i licznik **dalej
+stoi**. Czyli po dołączeniu wiązanie nie odpala z powodu, który nie ma nic
+wspólnego z żadną z tych dwóch flag. Bajt przywrócony.
+
+### Co z tego wynika dla dalszej pracy
+
+Wraca **hipoteza 41**, odłożona wcześniej: pionek klienta po travelu powstaje
+przez replikację, a jego komponent wejścia ma **48 wiązań zamiast 59** i nie ma
+zbudowanej mapy `CachedKeyToActionInfo` (§3o). Najprostsze wytłumaczenie zgodne
+ze wszystkim: `SetupPlayerInputComponent` na replikowanym pionku klienta nie
+rejestruje wiązań osi.
+
+Do sprawdzenia porównaniem 48 kontra 59 **po zawartości**, a nie po liczbie —
+w tym projekcie liczba pozycji już raz myliła pół dnia.
+
+### Czego NIE wolno z tego wyciągnąć
+
+Nie wolno napisać, że „globalna flaga nie była przyczyną". Była — i jest, dla
+fazy przed dołączeniem, potwierdzona pomiarem z licznikiem ruszającym z zera.
+Objaw ma **dwie przyczyny naraz** i obie trzeba usunąć. `fix_globalne` zostaje.
