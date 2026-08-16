@@ -64,23 +64,27 @@ zdarzenie.
 
 ---
 
-## NASTĘPNY KROK — wdrożyć liczniki wiązania ruchu (hipoteza 40)
+## NASTĘPNY KROK — stos wejścia kontrolera (hipoteza 41)
 
-**Kod jest napisany, zbudowany i zacommitowany. Zostało go wdrożyć.**
+**Zmierzone 16.08:** u klienta funkcja obsługi ruchu `0x14187DFC0` nie jest
+wołana **ani razu**, gdy u hosta bije ~200 razy na sekundę — obie instancje
+w świecie, w tych samych sekundach (`KNOWLEDGE.md` §3t). Wiązanie nie dispatchuje
+w ogóle, a samych wiązań w `UInputComponent` klienta jest tyle samo co u hosta
+(12 z 24). Brakuje więc kroku, który wstawia komponent na **stos wejścia**
+kontrolera.
 
-1. `tools/wdroz-dll.sh` (gry muszą być zamknięte),
-2. marker `WFCoop_log_ruch.txt` po OBU stronach,
-3. przebieg jak zwykle, gracz gra chwilę u hosta i próbuje u klienta.
+**Przepis:**
 
-| wynik u klienta | znaczenie |
-|---|---|
-| `wejscieA/B = 0` | wiązanie osi **w ogóle nie dispatchuje** → szukać w budowie mapy wiązań |
-| wejście > 0, `za-progiem = 0` | wiązanie odpala **z zerową wartością** → szukać w wyliczaniu osi z klawiszy |
-| wejście > 0, `za-progiem` > 0 | dochodzi dalej, a stempla i tak nie ma → szukać między progiem a końcem funkcji |
-| zera po obu stronach | brak pomiaru — powtórzyć |
+1. Znaleźć funkcję budującą stos (`CurrentInputStack`). **Odczyt z zewnątrz
+   NIE rozstrzygnie** — stos jest budowany i czyszczony w tej samej klatce,
+   więc z zewnątrz zawsze widać go pustym, także u zdrowego hosta.
+2. Licznik wstawień na stos, po OBU stronach. Host ≥1 na klatkę, klient zero
+   domyka sprawę.
+3. Dopiero potem szukać warunku, który u klienta pomija wstawienie.
 
-Wzorzec zawsze z hosta: u niego znacznik zmienia się 343 razy na 150 s, więc
-liczniki mają być wyraźnie niezerowe.
+**Punkt wyjścia do szukania:** `0x1418C7810` (`PlayerController::InputKey`)
+przechodzi po tablicy `PC+0x5b8`/`+0x5c0` — u obu stron pustej — więc to nie
+ta. Szukać w ścieżce tickowania kontrolera, nie w obsłudze zdarzeń.
 
 ---
 

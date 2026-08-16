@@ -2988,3 +2988,80 @@ i rozróżnia je jeden przebieg:
   przed wpisaniem, `obraz.py bajty`).
 * Sprawdzić `obraz.py xref` na każdym podmienianym bajcie — w tej funkcji jest
   gęsto skoków wewnętrznych, a `0x14187E28B` i `0x14187E293` są celami.
+
+
+## 3s. Jak czytać liczniki `RUCH-WIAZANIE` — wejście jest KLATKOWE
+
+Pierwszy przebieg z tymi licznikami dał u hosta **stojącego w hubie**:
+
+```
+RUCH-WIAZANIE: wejscieA=40786 wejscieB=40786 za-progiem=333
+```
+
+Czterdzieści tysięcy wywołań w dwie minuty to ~350 na sekundę — czyli funkcja
+ruchu `0x14187DFC0` jest wołana **co klatkę, niezależnie od tego, czy gracz
+cokolwiek naciska**. Tak działają wiązania osi w UE4: strzelają w każdej klatce
+z bieżącą wartością, także zerową.
+
+**Wniosek dla odczytu: `wejscieA`/`wejscieB` NIE MIERZĄ NICZEGO o wejściu.**
+Będą wysokie po obu stronach, także u martwego klienta. Rozstrzyga wyłącznie
+**`za-progiem`** — licznik za warunkiem `|wartość osi| > próg`, czyli liczba
+klatek, w których naprawdę przyszło wejście ruchu.
+
+| odczyt | znaczenie |
+|---|---|
+| host `za-progiem` > 0, klient = 0 | wartość osi u klienta jest **zerowa** → szukać w wyliczaniu osi z klawiszy |
+| oba `za-progiem` > 0 | wartość dochodzi, a stempla i tak nie ma → szukać między progiem a końcem funkcji |
+| oba = 0 | brak pomiaru — gracz nie ruszał się w tym oknie |
+
+`wejscieA`/`wejscieB` zostają w logu mimo to, bo pełnią rolę **kontrolki
+sprawności haka**: gdyby spadły do zera, znaczyłoby to, że łatka odpadła albo
+gra przestała tikować — a to trzeba odróżnić od „nie ma wejścia".
+
+To ta sama pułapka co przy `0x141A020B0` (§3j): licznik wygląda na zdarzeniowy,
+dopóki nie zobaczy się bazy spoczynkowej. Zasada zostaje: **logować
+bezwarunkowo co sekundę i najpierw przeczytać okno bez wejścia.**
+
+## 3t. ROZSTRZYGNIĘTE — u klienta wiązanie ruchu NIE JEST WOŁANE
+
+Przebieg 16.08, 23:51. Obie instancje w świecie hosta w tej samej chwili.
+Surowy zapis: `logs/h40/liczniki-ruchu-2351.txt`.
+
+| | host (w hubie) | klient (w świecie hosta, 35 s po objęciu pionka) |
+|---|---|---|
+| `wejscieA` (`0x14187DFC0`) | 72356 → **72746 w 2 s** (~200/s) | **0** |
+| `wejscieB` (`0x14187E2B0`) | to samo | **0** |
+| `za-progiem` (`0x14187E129`) | 554 | **0** |
+| `pionek+0xC74` | stemplowany | **−1,0** |
+
+**Ten pomiar nie wymagał wejścia gracza** i to jest jego siłą. Licznik wejścia
+jest KLATKOWY (§3s): u hosta bije ~200 razy na sekundę niezależnie od tego, czy
+ktokolwiek coś naciska. Porównujemy więc „wołane w każdej klatce" z „nie wołane
+ani razu", przy obu instancjach żywych i w świecie w tym samym oknie czasu.
+
+**Wykluczone od razu, żeby wynik nie był podrabiany:**
+
+* haki u klienta **są założone** — log `LICZNIK: ruch-wejscie-A/B, ruch-za-progiem`
+  o 23:49:35, wszystkie trzy, na tych samych adresach co u hosta;
+* klient **ma pionka i kontrolera** — `LocalPlayer 0x445B6F00` →
+  kontroler `0x5C4B2740` → pionek `0x2AA8E390`;
+* host w tych samych sekundach bije 200/s, więc to nie jest brak pomiaru.
+
+**Co to znaczy.** Odpada wariant „wiązanie odpala z zerową wartością osi".
+U klienta **wiązanie w ogóle nie dispatchuje**. To wprost tłumaczy objaw
+zgłaszany przez gracza — „klient nie może robić absolutnie nic" — bo klawisze
+i oś idą tą samą drogą rozprowadzania wiązań, poniżej `UPlayerInput`.
+
+### Gdzie szukać dalej
+
+Wiązania odpala przebieg chodzący co klatkę po **stosie wejścia** kontrolera
+(`CurrentInputStack`), budowanym od nowa w każdej klatce z komponentów pionka
+i kontrolera. Stos jest czyszczony na końcu tego samego przebiegu, więc
+**z zewnątrz zawsze widać go pustym** — u obu stron (§3p) — i statyczny odczyt
+niczego tu nie rozstrzygnie.
+
+Trzeba więc hakiem: znaleźć funkcję budującą stos i policzyć, ile pozycji do
+niego trafia po każdej stronie. Zero u klienta przy niezerowym u hosta domknie
+sprawę. Punkt zaczepienia: `UInputComponent` kontrolera u klienta ma tę samą
+liczbę wiązań co u hosta (12 z 24 pojemności, §3o), więc problem nie jest
+w samych wiązaniach, tylko w tym, że komponent nie trafia na stos.
