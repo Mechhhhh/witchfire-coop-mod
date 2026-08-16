@@ -2723,8 +2723,14 @@ jest przyczyną**.
 | 5 | `PlayerController::InputKey` (nadpisany) | `0x1418C7810` (vtable `+0xC18`) | **417 dojść — 100%** |
 | 5a | tablica `PC+0x5b8`/`+0x5c0` | — | niesprawdzona |
 | 6 | `APlayerController::InputKey` | `0x143A64920` | wołane bezwarunkowo z 5 |
-| 6a | **`PlayerController+0x348` (`PlayerInput`)** | — | **`0x531CBB90` — NIE null** (host: `0x2B54B270`) |
+| 6a | **`PlayerController+0x348` (`PlayerInput`)** | — | `0x531CBB90` — NIE null (host: `0x2B54B270`). **ODCZYT STATYCZNY, POZA OKNEM POMIARU** — patrz zastrzeżenie niżej |
 | 7 | `UPlayerInput::InputKey` | `0x141A01390` (vtable `+0x278`) | **← TU SZUKAĆ DALEJ** |
+
+**ZASTRZEŻENIE do wiersza 6a.** Wszystkie pozostałe wiersze to LICZNIKI z okna
+22:58:42–23:00. Wiersz 6a nie — to pojedynczy odczyt pamięci zdjęty kilka minut
+PO tym oknie. Jest bardzo prawdopodobnie poprawny (`PlayerInput` nie ma powodu
+znikać), ale formalnie nie jest pomiarem gałęzi i nie wolno go tak traktować.
+Domknąć licznikiem na `0x143A64920`, razem z hakami hipotezy 38.
 
 Tablica metod `UPlayerInput` jest po obu stronach ta sama (`0x1450A3470`),
 gniazdo `+0x278` też (`0x141A01390`) — więc klient i host wykonują **ten sam
@@ -2743,10 +2749,33 @@ return uVar4;                                                // brak PlayerInput
 ```
 
 **Wniosek dla następnej sesji.** Wejście klienta przechodzi siedem ogniw
-i wszystkie mierzone są zdrowe. Zostało jedno: `UPlayerInput::InputKey`
-(`0x141A01390`) i to, co ono robi z **wiązaniami**. Zacząć od dekompilacji tej
-funkcji — bez uruchamiania gry — a dopiero potem stawiać liczniki.
+i wszystkie mierzone są zdrowe. Zostało `UPlayerInput::InputKey`
+(`0x141A01390`). Zacząć od dekompilacji tej funkcji — bez uruchamiania gry —
+i **wypisać jej wczesne wyjścia tak samo, jak zrobiliśmy to dla rozdzielacza**,
+zanim wybierze się gniazda na haki. Ta kolejność zadziałała dziś dwa razy.
+
+Nie zawężać z góry do „wiązań". `UPlayerInput::InputKey` czyta też tablice
+stanu klawiszy i mapowania akcji, a przed nim jest jeszcze **niezmierzony
+wiersz 5a** — tablica `PC+0x5b8`/`+0x5c0`, po której `0x1418C7810` przechodzi
+i która mogła zdarzenie skonsumować wcześniej.
 
 **Nie zapominać o OSI.** Wszystko powyżej dotyczy klawiszy. Ruch myszy ma
 własny rozdzielacz (`UGameViewportClient::InputAxis`, wołany z `0x141A00FD0`)
 i **nie był mierzony ani razu**.
+
+
+## 3n. Adres obiektu NIE PRZEŻYWA restartu instancji
+
+16.08 wziąłem adres `LocalPlayer` hosta zapamiętany sprzed restartu i odczytałem
+spod niego `PlayerController` = `0xFFFFFFFFFFFFFFFF`. Wyszło to na jaw tylko
+dlatego, że Python przepełnił się przy dodawaniu offsetu — **odczyt stronę obok
+zwróciłby wiarygodnie wyglądające śmieci i zostałby zapisany jako pomiar.**
+
+Zasada: **w każdym przebiegu rozwiązywać adresy obiektów na nowo**
+(`tools/ue-objects.py --isa ...`), a nie przepisywać ich z poprzedniego.
+Dotyczy to także adresów wklejonych z notatek w tej samej sesji, jeśli między
+nimi była przebudowa biblioteki — bo ta wymaga zamknięcia gier.
+
+To jest ta sama rodzina co „nie mierz na popsutej instancji" i „pomiar po
+ponownym dołączeniu jest nieważny": stan, do którego się odwołujesz, musi
+pochodzić z TEGO przebiegu.

@@ -14,16 +14,19 @@ Ten plik ma zostać krótki.
 
 | # | hipoteza | przewidywanie | pomiar — NASTĘPNY KROK | werdykt |
 |---|---|---|---|---|
-| 38 | **wejście klienta ginie w `UPlayerInput::InputKey` (`0x141A01390`) albo w przetwarzaniu wiązań** — siedem ogniw wyżej jest już zmierzonych i wszystkie są zdrowe, łącznie z `PlayerInput`, który NIE jest nullem (`KNOWLEDGE.md` §3m) | klient i host wykonują ten sam kod (ta sama tablica metod `0x1450A3470`), więc różnica siedzi w DANYCH: w tablicy wiązań albo w stanie klawiszy | **najpierw dekompilacja `0x141A01390`, bez gry** — dopiero jej pseudokod powie, co porównywać. Potem liczniki i porównanie danych wiązań host kontra klient | — |
+| 38 | **wejście klienta ginie w `UPlayerInput::InputKey` (`0x141A01390`) albo tuż przed nim** — siedem ogniw wyżej zmierzonych i zdrowych (`KNOWLEDGE.md` §3m); niezmierzone zostały tylko tablica `PC+0x5b8`/`+0x5c0` (wiersz 5a) i sam `PlayerInput` jako GAŁĄŹ (6a to odczyt statyczny spoza okna) | klient i host mają tam tę samą tablicę metod `0x1450A3470`, więc wykonują ten sam kod — różnica jest w DANYCH | **najpierw dekompilacja `0x141A01390`, bez gry**, i wypisanie jej wczesnych wyjść, zanim wybierze się gniazda. Przy okazji licznik gałęzi `PlayerInput != 0` na `0x143A64920`, żeby domknąć 6a | — |
 | 39 | oś myszy ginie w tym samym miejscu co klawisze | licznik na rozdzielaczu osi pokaże u klienta 100% dojścia do kontrolera, tak jak dla klawiszy | znaleźć `UGameViewportClient::InputAxis` (wołany z `0x141A00FD0`, tak jak `InputKey` z `0x141A01190`) i powtórzyć na nim parę liczników | — |
 | 32 | **awaria hosta na wiszącym słuchaczu i park wątku gry to JEDNO zjawisko** — pętla rozgłaszania trzyma zamek (`+0x360`) przez cały przebieg listy, więc awaria w środku zostawia zamek wzięty i reszta gry staje na `futex_wait` | jeśli tak, poprawny strażnik przed wywołaniem usuwa oba objawy naraz | **zmiana planu 16.08:** przepisywać nie ma czego — pseudokod potwierdził mechanizm zamka, a audyt bajt po bajcie pokazał, że kodowanie `fix_lista` jest **poprawne** (`KNOWLEDGE.md` §3k). Próba kontrolna h.28 zdjęła `fix_lista` i `fix_ekwipunek` **naraz**, więc nie wiadomo, który zamrażał. Przebieg z włączonym **tylko** `fix_lista` — sam marker, bez przebudowy | zamek POTWIERDZONY pseudokodem; park POTWIERDZONY pomiarem (0 tików/3 s, `futex_wait`) |
 | 29 | wyprawy nie da się przejść razem, bo powrót do hubu nie jest podróżą sesji | po zamianie lokalnego ładowania mapy na `ServerTravel` obaj gracze przenoszą się razem, a skrypty misji ruszają po stronie serwera | **trop znaleziony:** komenda `SERVERTRAVEL` idzie przez gniazdo **`+0x440`** w tablicy metod `UWorld`. Na żywym hoście odczytać ten wpis i zdekompilować — dopiero potem projektować łatkę | — |
 | 30 | magazynek klienta, niesterowana maszyna stanów i brak potwierdzenia objęcia są **skutkami** 29, a nie osobnymi usterkami | po naprawie startu misji część z nich znika bez osobnej łatki | mierzyć dopiero PO 36 i 29 | — |
 | 31b | strażnik `fix_smycz` jest przyczyną przeżycia klienta, a nie zbiegiem okoliczności | po ZDJĘCIU markera awaria wraca z tym samym stosem (`SetLeashName`, `0x141B7DDAA`) | jeden przebieg z markerem zdjętym — tani, robić przy okazji innego | — |
 
-**Kolejność: 38 → 39 → 32 → 29 → 30.** Bez wejścia u klienta co-op jest
-niegrywalny, więc 38 jest pierwsze, a 39 zaraz po nim (to ta sama robota na
-sąsiednim rozdzielaczu). 32 jest dalej, bo host pada po ~50 min i psuje każdy
+**Kolejność: 38 → 39 → 32 → 29 → 30, ale 39 wolno wziąć PIERWSZE.** Objaw,
+który gracz zgłasza najpierw, to „klient nie rusza kamerą" — a to jest
+wyłącznie droga OSI, dotąd niemierzona. Jeśli dekompilacja `0x141A01390`
+okaże się mętna, 39 jest tańszym następnym pomiarem, nie kontynuacją:
+`0x141A00FD0` zapisuje `+0x388..0x394` i woła filtr, a jego rozdzielacz jest
+bliźniakiem `0x143820F10` — jedno przejście `obraz.py fun 0x141A00FD0` go nazwie. 32 jest dalej, bo host pada po ~50 min i psuje każdy
 dłuższy przebieg — a kosztuje teraz jeden marker, nie przebudowę. 29 to kamień
 milowy, ale ma sens dopiero, gdy klient gra.
 
