@@ -64,7 +64,33 @@ zdarzenie.
 
 ---
 
-## NASTĘPNY KROK — globalna flaga wejścia (hipoteza 42)
+## PRZYCZYNA ZNALEZIONA (17.08) — i co z nią zrobić
+
+**Gra gasi globalne wejście na czas ładowania mapy i sama je przywraca. Host
+robi jedno i drugie, klient tylko pierwsze.**
+
+| | host | klient |
+|---|---|---|
+| wyłączenie | 00:19:37 | 00:20:54 |
+| **włączenie** | **00:19:52** | **nigdy** |
+| `GameInstance+0x2A0` na koniec | **1** | **0** |
+
+To tłumaczy objaw w całości i spina wszystkie wcześniejsze ustalenia w jeden
+łańcuch — szczegóły i dowody w `KNOWLEDGE.md` §3x.
+
+**NASTĘPNY KROK (hipoteza 43):** wywołać u klienta
+`DimensionGameInstance:SetGlobalInputEnabled(true)` po dołączeniu. To
+`Native, BlueprintCallable`, czyli droga, której gra sama używa (zasada 1).
+**Nie zapisem bajta** — sprawdzone, surowy zapis nie odtwarza powiadomień
+i nie odblokowuje ruchu (§3w).
+
+Potwierdzenie będzie tanie: liczniki ruchu są **klatkowe**, więc ruszą same,
+bez naciskania czegokolwiek. Marker `fix_globalne`, licznik wywołań,
+potwierdzenie przez ZDJĘCIE markera (zasada 9).
+
+---
+
+## Poprzedni krok (zrobiony) — globalna flaga wejścia (hipoteza 42)
 
 **Zmierzone:** `GameInstance + 0x2A0` (`GlobalInputEnabled`) to **1 u hosta
 i 0 u klienta**. Flaga jest globalna dla instancji gry, więc gasi wejście

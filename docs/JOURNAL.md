@@ -14,7 +14,8 @@ Ten plik ma zostać krótki.
 
 | # | hipoteza | przewidywanie | pomiar — NASTĘPNY KROK | werdykt |
 |---|---|---|---|---|
-| 42 | **u klienta gaśnie globalna flaga wejścia `GameInstance+0x2A0` i nigdy nie wraca** — host ma 1, klient 0 (`KNOWLEDGE.md` §3w). Flaga jest globalna dla instancji gry, więc jej zasięg zgadza się z objawem „nie działa absolutnie nic" | hak na setterze `0x1418953E0` pokaże u klienta zejście do zera (najpewniej przy travelu) i brak powrotu, a u hosta zejście i powrót przy ładowaniu mapy | licznik i log wartości na `0x1418953E0` po OBU stronach; potem próba wywołania `SetGlobalInputEnabled(true)` — to `BlueprintCallable`, czyli droga, której gra sama używa | — |
+| 43 | **wywołanie `SetGlobalInputEnabled(true)` na kliencie przywróci mu wejście** — przyczyna ustalona (§3x): gra gasi flagę przy ładowaniu i u klienta nigdy jej nie zapala | po wywołaniu liczniki ruchu u klienta ruszą (są klatkowe, więc bez naciskania czegokolwiek), a `pionek+0xC74` zacznie się stemplować | wołać przez `UFunction` `DimensionGameInstance:SetGlobalInputEnabled` (`Native, BlueprintCallable`) — droga, której gra sama używa. Marker `fix_globalne`, licznik, potwierdzenie przez ZDJĘCIE markera | — |
+| ~~42~~ | ~~u klienta gaśnie globalna flaga wejścia i nigdy nie wraca~~ — **POTWIERDZONA, patrz §3x** — host ma 1, klient 0 (`KNOWLEDGE.md` §3w). Flaga jest globalna dla instancji gry, więc jej zasięg zgadza się z objawem „nie działa absolutnie nic" | hak na setterze `0x1418953E0` pokaże u klienta zejście do zera (najpewniej przy travelu) i brak powrotu, a u hosta zejście i powrót przy ładowaniu mapy | licznik i log wartości na `0x1418953E0` po OBU stronach; potem próba wywołania `SetGlobalInputEnabled(true)` — to `BlueprintCallable`, czyli droga, której gra sama używa | — |
 | 41 | ~~komponent wejścia klienta nie trafia na stos~~ — **osłabiona przez 42**: brak `CachedKeyToActionInfo` może być skutkiem tej samej przyczyny — wiązanie nie jest wołane ANI RAZU (§3t), a samych wiązań jest tyle samo co u hosta (12/24), więc brakuje kroku, który wstawia komponent na stos | licznik pozycji trafiających na stos pokaże u hosta ≥1 na klatkę, a u klienta zero | znaleźć funkcję budującą `CurrentInputStack` (stos jest czyszczony w tej samej klatce, więc odczyt z zewnątrz NIE rozstrzygnie — potrzebny hak) i policzyć wstawienia po obu stronach | — |
 | ~~40~~ | ~~wiązanie ruchu u klienta nie odpala albo jego skutek jest odrzucany~~ — przetwarzanie wiązań CHODZI (§3p), więc pytanie zeszło o poziom niżej, do samego wiązania | licznik na funkcji stemplującej znacznik wejścia ruchu (`pionek+0xC74`) pokaże u hosta stemple, a u klienta zero — albo odwrotnie, i wtedy strata jest za znacznikiem | znaleźć zapis do `pionek+0xC74` (`tools/pole.py 0xC74 --zapis --funkcje`) i postawić tam licznik po OBU stronach | — |
 | 38 | ~~wejście ginie w `UPlayerInput::InputKey`~~ — **zawężone przez 3p**: zapis i konsumpcja stanu klawiszy są identyczne — siedem ogniw wyżej zmierzonych i zdrowych (`KNOWLEDGE.md` §3m); niezmierzone zostały tylko tablica `PC+0x5b8`/`+0x5c0` (wiersz 5a) i sam `PlayerInput` jako GAŁĄŹ (6a to odczyt statyczny spoza okna) | klient i host mają tam tę samą tablicę metod `0x1450A3470`, więc wykonują ten sam kod — różnica jest w DANYCH | **najpierw dekompilacja `0x141A01390`, bez gry**, i wypisanie jej wczesnych wyjść, zanim wybierze się gniazda. Przy okazji licznik gałęzi `PlayerInput != 0` na `0x143A64920`, żeby domknąć 6a | — |
@@ -24,7 +25,8 @@ Ten plik ma zostać krótki.
 | 30 | magazynek klienta, niesterowana maszyna stanów i brak potwierdzenia objęcia są **skutkami** 29, a nie osobnymi usterkami | po naprawie startu misji część z nich znika bez osobnej łatki | mierzyć dopiero PO 36 i 29 | — |
 | 31b | strażnik `fix_smycz` jest przyczyną przeżycia klienta, a nie zbiegiem okoliczności | po ZDJĘCIU markera awaria wraca z tym samym stosem (`SetLeashName`, `0x141B7DDAA`) | jeden przebieg z markerem zdjętym — tani, robić przy okazji innego | — |
 
-**Kolejność: 42 → 41 → 39 → 32 → 29 → 30.** Gracz sprostował objaw: u klienta **nie
+**Kolejność: 43 → 32 → 29 → 30.** Hipotezy 39 i 41 (oś myszy, stos wejścia)
+**odpadły jako osobne sprawy** — obie tłumaczy §3x. Gracz sprostował objaw: u klienta **nie
 działa NIC** — ani klawisze, ani mysz, ani Esc (`KNOWLEDGE.md` §3o). Obie drogi
 wejścia są więc martwe naraz, a rozchodzą się dopiero na rozdzielaczach — czyli
 przyczyna leży w części WSPÓLNEJ. Dlatego 38 zostaje pierwsze, a 39 jest
@@ -32,10 +34,13 @@ potwierdzeniem, nie skrótem. 32 jest dalej, bo host pada po ~50 min i psuje ka�
 dłuższy przebieg — a kosztuje teraz jeden marker, nie przebudowę. 29 to kamień
 milowy, ale ma sens dopiero, gdy klient gra.
 
-### Zamknięte 16.08 — NIE powtarzać
+### Zamknięte 16–17.08 — NIE powtarzać
 
 | co | werdykt |
 |---|---|
+| **hipoteza 42 — globalna flaga wejścia** | **POTWIERDZONA 00:22 pomiarem z próbą kontrolną.** Host: wyłączenie o 00:19:37, **włączenie o 00:19:52**. Klient: wyłączenie o 00:20:54, **włączenia NIGDY** — ani przy starcie, ani po dołączeniu. Stan końcowy 1 kontra 0. To jest PRZYCZYNA, `KNOWLEDGE.md` §3x |
+| szukanie przyczyny w travelu do hosta | **obalone czasem**: klient gasi flagę o 00:20:54, a dołącza o 00:21:51 — minutę później. Wyłączenie jest przy jego WŁASNYM ładowaniu mapy, jak u hosta |
+| szukanie wołających `SetGlobalInputEnabled` w kodzie natywnym | **bezcelowe**: jedyny statyczny wołający to własna przejściówka UFunction. Logika siedzi w Blueprintach |
 | **`GameplayEnabled` na pionku jako bramka ruchu** | **OBALONE podstawieniem.** Zapisane `1` trzymało się (gra nie nadpisała), a liczniki ruchu dalej stały na zerze przy hoście bijącym 178/s. To OBJAW, nie przyczyna — flagę ustawia powiadomienie `OnGlobalInputEnabledValueChanged`, czyli pochodna hipotezy 42 |
 | podstawianie surowym zapisem flag, które mają łańcuch powiadomień | **nierozstrzygające z zasady**: zapis bajta nie odtwarza powiadomień, które poszły przy prawdziwej zmianie. Do takich flag używać ich własnego settera |
 | **hipoteza 40 — „wiązanie ruchu odpala z zerową wartością osi"** | **OBALONA 23:51.** U klienta funkcja `0x14187DFC0` nie jest wołana **ani razu** (0 przy ~200/s u hosta w tych samych sekundach, obie instancje w świecie). Wiązanie nie dispatchuje w ogóle. Szczegóły: `KNOWLEDGE.md` §3t |

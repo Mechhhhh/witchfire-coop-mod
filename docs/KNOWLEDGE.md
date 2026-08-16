@@ -3194,3 +3194,66 @@ Bajt przywrócony do zera po pomiarze.
    mamy pełny obraz.
 2. Czy u hosta też spada przy ładowaniu mapy i wraca — to da wzorzec
    poprawnego przebiegu (zasada 11).
+
+## 3x. PRZYCZYNA ZNALEZIONA — klient gasi globalne wejście i nigdy go nie zapala
+
+Przebieg 17.08, 00:19–00:22. Marker `log_globalne`, hak na
+`SetGlobalInputEnabled` (`0x1418953E0`), liczniki rozdzielone na włączenia
+i wyłączenia, po obu stronach. Surowy zapis: `logs/h42/flaga-globalna-0022.txt`.
+
+| czas | host | klient |
+|---|---|---|
+| start, haki założone | `wlaczen=0 wylaczen=0` | `wlaczen=0 wylaczen=0` |
+| ~8 s po starcie | **`wylaczen=1`** (00:19:37) | **`wylaczen=1`** (00:20:54) |
+| ~15 s później | **`wlaczen=1`** (00:19:52) | **nic** |
+| po dołączeniu klienta | — | **nic** |
+| stan końcowy (odczyt na żywo) | **1** | **0** |
+
+**Gra sama gasi globalne wejście na czas ładowania mapy i sama je przywraca.**
+Host robi jedno i drugie. Klient robi tylko pierwsze.
+
+### To jest przyczyna, a nie kolejny objaw
+
+Zasięg się zgadza: flaga jest globalna dla instancji gry, więc jej zgaszenie
+gasi wejście w całej grze naraz — i dokładnie to zgłasza gracz („klient nie może
+robić absolutnie nic"). Wszystkie wcześniejsze ustalenia układają się teraz
+w jeden łańcuch, bez sprzeczności:
+
+1. `SetGlobalInputEnabled(false)` przy ładowaniu mapy — obie strony,
+2. u klienta **brak** `SetGlobalInputEnabled(true)`,
+3. powiadomienie `OnGlobalInputEnabledValueChanged` ustawia `GameplayEnabled`
+   na pionku — stąd `False` u klienta (§3u), jako SKUTEK,
+4. wiązanie ruchu nie jest wołane ani razu (§3t),
+5. `pionek+0xC74` nigdy nie ostemplowany (§3r),
+6. `HasMovementInput` nigdy nie staje się 1 — ustalenie z 11.08 (§3f), które
+   przez pół dnia wyglądało na osobną usterkę maszyny stanów.
+
+Zgadza się też to, czego nie umieliśmy pogodzić: zdarzenia wejścia **docierają**
+do gry klienta na każdym piętrze (§3j, §3l, §3m) i są konsumowane (§3p) — bo
+warstwa dostarczania jest sprawna. Gaśnie dopiero to, co z nich robi grę.
+
+### Ważne dla naprawy: to NIE jest skutek travelu do hosta
+
+Klient gasi flagę o 00:20:54, a dołącza dopiero o 00:21:51 — **całą minutę
+później**. Wyłączenie następuje przy jego WŁASNYM ładowaniu mapy, tak samo jak
+u hosta. Różnica jest w tym, że u hosta przychodzi potem włączenie.
+
+Najprostsze wytłumaczenie zgodne z danymi: włączenie jest częścią normalnej
+drogi wyjścia z menu (host przechodzi ją, klikając CONTINUE), a klient tej drogi
+nie przechodzi — jest automatyczny i idzie prosto w travel. Do sprawdzenia
+przebiegiem, nie do przyjęcia na słowo.
+
+### Gdzie szukać kodu, który to włącza
+
+`SetGlobalInputEnabled` ma **jednego statycznego wołającego — własną
+przejściówkę UFunction** (`0x141BEEAC0`). Znaczy to, że logika włączania
+i wyłączania siedzi w **Blueprintach**, nie w kodzie natywnym, więc nie znajdzie
+się jej odwołaniami w obrazie. Szukać po stronie grafu: kto woła
+`SetGlobalInputEnabled` i pod jakim warunkiem.
+
+### Najtańsza próba naprawy
+
+Wywołać `SetGlobalInputEnabled(true)` na instancji gry klienta po dołączeniu —
+to `Native, BlueprintCallable`, czyli droga, której gra sama używa (zasada 1
+spełniona). **Nie zapisem bajta**: sprawdzone, surowy zapis nie odtwarza
+powiadomień i nie odblokowuje ruchu (§3w).
