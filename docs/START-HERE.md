@@ -1,13 +1,13 @@
 # Zacznij tutaj — stan i następny krok
 
-Stan na 2026-08-12, 15:05. **Kierunek projektu zmieniony w nocy 12.08 —
-przeczytaj sekcję „ZWROT", zanim cokolwiek zrobisz.**
+Stan na **2026-08-16**. Gry są **zamknięte**, nic nie chodzi w tle, repo czyste.
+Ostatnia sesja robocza: 12.08 (od nocy do wieczora).
 
 ## Co czytać
 
-**Ten plik, potem `OVERVIEW.md` §0–§0c, potem `JOURNAL.md`. Nic więcej na starcie.**
+**Ten plik, potem `JOURNAL.md`. Nic więcej na starcie.**
 
-`KNOWLEDGE.md` (2300 linii) to zapis, JAK doszliśmy do wniosków — nie czytaj go
+`KNOWLEDGE.md` (2500 linii) to zapis, JAK doszliśmy do wniosków — nie czytaj go
 w całości. Wyszukuj punktowo:
 
 ```
@@ -23,163 +23,180 @@ w co-opie działa, a czego nikt nie sprawdził. `docs/historia/` — NIE czytać
 
 ---
 
-## ZWROT 12.08 — przestajemy naprawiać gałęzie
+## STAN W SKRÓCIE
 
-Przez kilka dni szło wszystko w ruch pionka zdalnego (sprint, maszyna stanów,
-amunicja). W nocy 12.08 gracz podał dwie informacje, które to unieważniły:
+**Co działa:** obaj gracze są w jednym świecie i widzą się; host nasłuchuje
+także w hubie; klient **przeżywa dołączenie w hubie** (`fix_smycz`, 12.08:
+połączenie 453 s zamiast śmierci po 64 s), ma kamerę, świat i pełne objęcie
+pionka; host nie dostaje duplikatu ekwipunku (`fix_dup`); klient chodzi
+(`fix_attrs`) i wyjmuje broń.
 
-1. **Wyprawy nie da się przejść razem** — klient ląduje na mapie bez skryptów,
-   które uruchamiają resztę. Powrót do hubu przy połączonych graczach zawiesza
-   hosta na ekranie ładowania, a klienta wyrzuca do jego singleplayera.
-2. **Hub jest centrum wszystkiego** (menu główne jest na tej samej mapie);
-   stamtąd robi się ascendy i startuje wyprawy. Klient nie potrafi dołączyć,
-   gdy host jest w hubie.
+**Co blokuje grywalność — jedna rzecz:** po dołączeniu **klient nie przyjmuje
+żadnego wejścia** (ani WSAD, ani myszy, ani Esc). Zmierzone: kierunek patrzenia
+klienta stoi (0 zmian na 1499 próbek), gdy host w tym samym oknie ma 121 zmian.
+Przed dołączeniem to samo okno przyjmuje wejście bez zarzutu (250 próbek gry
+gracza, sprint 800, unik 1502) — więc psuje je dopiero dołączenie.
 
-Wniosek: dotychczasowy przepływ — host wchodzi SAM na wyprawę, klient dołącza
-do TRWAJĄCEJ misji — jest **najtrudniejszym możliwym przypadkiem sieciowym
-w Unrealu**, wybranym przypadkiem. Właściwy jest odwrotny: obaj spotykają się
-w hubie, a `ServerTravel` przenosi ich razem.
+**Dwa problemy poboczne, oba zmierzone:** host pada po ~50 min na wiszącym
+słuchaczu (ściana #3), a przy PONOWNYM dołączeniu klienta parkuje wątek gry
+(`futex_wait`, 0 tików/3 s). Dekompilacja pokazała, że pętla rozgłaszania trzyma
+zamek przez cały przebieg listy — więc oba objawy to prawdopodobnie jedno
+zdarzenie.
 
-**Nowy kamień milowy M1′: sesja żyje w hubie i przeżywa podróż tam i z powrotem.**
-Ruch, amunicja i maszyna stanów **odłożone** — mogą być skutkami tego, że sesja
-nigdy nie została poprawnie rozpoczęta dla dwóch graczy.
+---
 
-## Próba kontrolna h. 28 — WYKONANA 12.08 14:39–14:49. Dwa rozstrzygnięcia
+## NASTĘPNY KROK — licznik zdarzeń wejścia (hipoteza 36)
 
-1. **Host bez trampolin NIE zamarł przy dołączeniu** → zamrożenie z 03:25 było
-   regresją `fix_lista`/`fix_ekwipunek`. Zostają zdjęte; przed powrotem pętle
-   do przepisania (zasada 7).
-2. **Klient umiera ~4 s po travelu**: thunk BP `SetLeashName` (`0x141B7DDA0+0xA`)
-   wołany na nullu z timera zdrowia. Stos identyczny 03:18/03:25/14:41.
-   Bliźniak `SetSpawnBehaviour` jest strzeżony od dawna — awaria przeniosła
-   się na niestrzeżonego bliźniaka. Stąd strażnik `fix_smycz` (wdrożony,
-   patrz niżej). Pełny zapis: `KNOWLEDGE.md` „Próba kontrolna hipotezy 28".
+Jedyne pytanie, które blokuje wszystko inne: **czy do gry klienta docierają
+zdarzenia wejścia po dołączeniu.** Wykluczone już zostało wszystko po stronie
+gry (tryb wejścia, wiązania, stan kontrolera — patrz `JOURNAL.md`), więc
+zostaje warstwa dostarczania. Odpowiedź daje jeden przebieg.
 
-Do tego zjawisko trzecie, zaobserwowane po przebiegu (hipoteza 32,
-`JOURNAL.md`): **host paruje wątek gry ~50 s po zerwaniu połączenia**
-(`futex_wait` bez limitu, render dalej rysuje — „241 FPS a stoi"), dokładnie
-w pierwszym 30-sekundowym takcie napełniania po tym, jak kontroler klienta
-został „bez Player". Gracz: „to się zawsze działo".
+**Przepis, wszystko gotowe do napisania:**
 
-## NASTĘPNY KROK — przebieg hipotezy 31 (może już trwać)
+1. Hak zliczający na **`0x141A020B0`** — wspólny filtr zdarzeń wejścia gry,
+   wołany przez wszystkie trzy obsługi z tablicy metod `FViewportClient`
+   (`ADDRESSES.md`, sekcja „punkt wejścia zdarzeń"). Wołany **raz na zdarzenie**,
+   nie co klatkę, więc jest tani (zasada 7).
+2. Marker `log_wejscie`, licznik wypisywany do logu co kilka sekund — po
+   **obu** stronach, bo host jest próbą kontrolną.
+3. Przebieg: host w hubie, klient dołącza **pierwszy raz** (ponowne dołączenie
+   parkuje hosta i unieważnia pomiar — sprawdź tiki hosta przed werdyktem),
+   gracz gra chwilę u hosta i próbuje u klienta.
 
-Host wystartowany z nową biblioteką, markery uzbrojone. Przebieg jak przy
-próbie 28: gracz klika CONTINUE i zostaje w hubie, ruch pionka uruchamia
-pomiar, klient dołącza sam. Kryteria:
-
-| pomiar | oczekiwane przy sukcesie |
+| wynik | znaczenie |
 |---|---|
-| log klienta przy starcie | `SMYCZ: straznik nulla zalozony na SetLeashName` |
-| licznik | `SMYCZ: pominiete SetLeashName na nullu: N`, N ≥ 1 ok. 4 s po travelu |
-| życie klienta | brak nowego zrzutu w `Crashes` compat2, proces żyje > 120 s po połączeniu |
-| licznik `netdriver+0x98` | trzyma 1 dłużej niż 64 s |
-| `OBJECIE` po obu stronach | czy uścisk (`ClientRestart` → `ServerAcknowledgePossession`) dochodzi dla klienta |
+| host > 0, klient = 0 | zdarzenia nie docierają do gry klienta → szukać w Slate/oknie, nie w co-opie |
+| host > 0, klient > 0 | zdarzenia docierają, a gra je ignoruje → wracamy do środka gry, z nowym tropem |
+| oba = 0 | **brak pomiaru**, nie wynik — gracz nie grał w tym oknie; powtórzyć |
 
-Potwierdzenie strażnika: ZDJĄĆ `fix_smycz` — awaria ma wrócić z tym samym
-stosem. Potem hipoteza 29 (`ServerTravel`, robota statyczna).
+Potem, w tej kolejności: **przepisać `fix_lista`** z pseudokodu
+(`tools/dekompiluj.sh 0x1419E7B40`) i dopiero wtedy `ServerTravel` (hipoteza 29,
+trop: gniazdo `+0x440` w tablicy metod `UWorld`).
 
-**Do pomiaru bez zgadywania:** `ClientConnections` sterownika sieciowego hosta
-leży pod `netdriver+0x90` (TArray, licznik `+0x98`), a `ConnectionTimeout` pod
-`+0x7C` i `InitialConnectTimeout` pod `+0x78`. Sterownik POWSTAJE dopiero po
-CONTINUE (w menu go nie ma — skan znajduje tylko klasy i `Default__`).
-Próbnik z przebiegu 28: `~/.claude/jobs/*/tmp/h28-probka.py` (szuka sterownika
-sam, próbkuje licznik + tiki wątków co 0,5 s, zleca zrzuty po `0→1`).
+---
 
 ## Stan wdrożenia
 
-Biblioteka **wdrożona 15:04**, `md5=96d866a2`. Zgodność ze źródłem sprawdzać
-**napisami**, nie sumą (build niepowtarzalny — mingw wpisuje czas w nagłówek
-PE). Nowość tej wersji: napisy `SMYCZ:` (6 sztuk w pliku).
+Biblioteka **wdrożona**, `md5=cff407728ca95ad1c16dd365d029680a` — zgodna
+z `src/proxy-dll/build/xinput1_3.dll`. Zgodność ze źródłem sprawdzać
+**napisami**, nie sumą (build niepowtarzalny — mingw wpisuje czas w nagłówek PE).
+Ta wersja ma napisy `SMYCZ:` i `WEJSCIE:`.
 
-**Markery hosta:** `always_listen`, `auto_host`, `fix_attrs`, `fix_booster`,
-`fix_dup`, `fix_input`, `late_restart`, `log_objecie`, `map`, `no_pause`,
-`swap_now`, `swap_only`, `watch_pc`.
-**Markery klienta:** `fix_attrs`, `fix_dup`, `fix_effects`, `fix_smycz`,
-`fix_weapon`, `join_delay`, `join_ip`, `log_objecie`.
+**Markery hosta (compat1):** `always_listen`, `auto_host`, `fix_attrs`,
+`fix_booster`, `fix_dup`, `fix_input`, `late_restart`, `log_objecie`, `map`,
+`no_pause`, `swap_now`, `swap_only`, `watch_pc`.
 
-**ZDJĘTE świadomie:** `fix_state` (wywalał hosta — patrz niżej), `fix_przejscia`,
-`fix_czas`, `fix_lista`, `fix_ekwipunek` (obie trampoliny = regresja zamrażająca
-hosta, potwierdzona próbą kontrolną 14:41), `fix_ammo` oraz diagnostyka tamtej
-linii (`log_tryb`, `log_kanal`, `log_speed`, `log_ammo`, `log_owner`,
-`log_fill`, `count_move`).
+**Markery klienta (compat2):** `fix_attrs`, `fix_dup`, `fix_effects`,
+`fix_smycz`, `fix_weapon`, `join_delay` (= 60 s), `join_ip` (= 127.0.0.1),
+`log_objecie`.
 
-`log_objecie` UZBROJONE po obu stronach (embargo z §0c zdjęte — h. 28
-rozstrzygnięta). Kontrola działania: przy starcie hosta oba haki strzeliły po
-razie dla własnego kontrolera (`ClientRestart 1, ServerAcknowledgePossession 1`)
-— cisza w przebiegu NIE będzie dwuznaczna.
+**ZDJĘTE świadomie:**
+
+- `fix_wejscie` — kod został w bibliotece, ale marker jest zdjęty: wywołania
+  działały i nic nie dały (hipoteza 35, obalona);
+- `fix_lista`, `fix_ekwipunek` — **zamrażały hosta przy dołączaniu**, do
+  przepisania;
+- `fix_state`, `fix_ammo` — wywalały hosta;
+- `fix_przejscia`, `fix_czas` oraz diagnostyka tamtej linii (`log_tryb`,
+  `log_kanal`, `log_speed`, `log_ammo`, `log_owner`, `log_fill`, `count_move`).
+
+**Opóźnienie dołączenia klienta: `WFCoop_join_delay.txt` = 60 s.** Gracz
+poprosił 12.08, żeby nie dawać więcej. Wartość czyta się przy starcie klienta.
+
+---
+
+## Jak to uruchomić
+
+Host wchodzi normalnie — CONTINUE, potem hub. DLL zamienia w `UEngine::LoadMap`
+skok `je` na dwa `NOP`-y (`0x143BEC200`), przez co gra **sama** woła
+`UWorld::Listen` przy każdym ładowaniu mapy — także w hubie.
+
+```
+tools/stop.sh
+WF_GAMESCOPE=1 WF_W=1100 WF_H=620 WF_PREFIX=~/.local/share/witchfire-mp/compat1 \
+  WF_INJECT=proxy nohup tools/launch-instance2.sh &
+# gracz klika CONTINUE i zostaje w hubie
+WF_GAMESCOPE=1 WF_PREFIX=~/.local/share/witchfire-mp/compat2 \
+  WF_INJECT=proxy nohup tools/launch-instance2.sh &
+# klient dołącza sam po 60 s
+```
+
+**Zawsze z `WF_GAMESCOPE=1`.** Bez tego gra pauzuje się przy utracie fokusu,
+a to psuje drugą instancję trwale — pomiar bez kompozytora mierzy inne zjawisko.
+
+Przebudowa i wdrożenie: `tools/wdroz-dll.sh` (gry muszą być zamknięte).
+
+---
+
+## Narzędzia (`tools/`)
+
+**Bez uruchomionej gry:** `dekompiluj.sh <adres>` (**pseudokod C**, Ghidra na
+zrzucie obrazu — do LOGIKI i do kodu spoza świata `UObject`), `obraz.py`
+(deasemblacja, odwołania, literały), `pole.py` (kto czyta/zapisuje pole),
+`wpisy.py` (gdzie leży wskaźnik na napis — tablice UHT), `warunki.py`,
+`przejscia.py`, `szukaj.py`.
+
+**Na żywej grze:** `stan-gracza.py`, `ue-props.py` (**stąd offsety pól, których
+nie ma w zrzucie**), `ue-objects.py`, `ue-funcs.py --sygnatury` (**tak potwierdza
+się sygnaturę przed wołaniem**), `sonda-wejscia.py` (czy wejście dochodzi —
+`ControlRotation`), `wejscie-stan.py` (wyłączniki wejścia bez odbicia),
+`zrzut-wejscia.py` (zrzut przed/po zdarzeniu), `sygnatura.py`,
+`read-crash-xml.py`, `stos-watku.py`, `zrzut.sh`.
+
+**Nagrywanie:** `obserwator.sh` (sam wykrywa uruchomienie gry i zapisuje sesję),
+`rejestrator.py` (szereg czasowy obu graczy), `czuwak.sh`.
+
+**Wejście i okna:** `wejscie.py` (`/dev/uinput` — **działa**, ale gra pod
+gamescope go nie przyjmuje), `kursor.py` (ustawia kursor; `hyprctl movecursor`
+w tej konfiguracji NIE działa), `kto-ma-wejscie.py` (kto dostaje wejście, sam
+odczyt).
+
+**Publikacja:** `sync-public.sh` — jedyna droga do publicznego repo; tłumaczy
+nazwy plików na angielskie i przepisuje odsyłacze.
+
+---
 
 ## Czego NIE powtarzać (drogo kupione 11–12.08)
 
 | co | dlaczego |
 |---|---|
-| **`fix_lista` + `fix_ekwipunek` w obecnej postaci** | **zamrażały hosta przy dołączaniu** (regresja potwierdzona próbą kontrolną 14:41: bez nich host żył). Pętle wykonują się przy dołączaniu i łamią zasadę 7 — przepisać, zanim wrócą |
-| **`fix_state`** | **wywalał hosta.** Stos: zapis warunku ← opakowanie `UpdateCustomConditionBool` ← thunk `UFunction` ← `ProcessEvent`. Gra swoje warunki woła **bezpośrednio**, bez `UFunction` i bez `ProcessEvent` — tą drogą chodzi wyłącznie nasz kod |
-| kolejkowanie `IdleToWalking` w dobrej chwili | 3600 prób, 0 udanych, przy potwierdzonym ruchu gracza |
-| „pionek klienta trzymany w spadaniu" | obalone: `MovementMode = 1` w 95% próbek |
-| pauza jako przyczyna | gracz: pauza zawiesza klienta tylko wtedy, gdy pauzuje **klient**; host może pauzować bez skutku dla klienta |
-| wołanie kodu gry drogą, której gra sama nie używa | dwa razy skończyło się awarią hosta (`fix_ammo`, `fix_state`) |
+| **kolejne warianty `SetInputMode`** | wywołanie DZIAŁA (przechwyt myszy `2→1`) i nie przywraca wejścia: fokus jest tylko ODKŁADANY do `FReply`, a silnik realizuje go przy zdarzeniu wejścia, którego nie ma |
+| **`fix_lista` + `fix_ekwipunek` w obecnej postaci** | zamrażały hosta przy dołączaniu; przepisać z pseudokodu, nie z asemblera |
+| **`fix_state`, `fix_ammo`** | wywalały hosta — wołanie kodu gry drogą, której gra sama nie używa |
+| podawanie wejścia z zewnątrz przez gamescope | **nie da się**; kursor gry nie idzie za pozycją systemową, a kliknięcia nie docierają. Menu klika gracz |
+| testy bez gamescope | gra pauzuje się przy utracie fokusu i psuje klienta — pomiar jest bezwartościowy |
+| pomiar po PONOWNYM dołączeniu | host ma wtedy zaparkowany wątek gry; sprawdź tiki, zanim cokolwiek odczytasz |
+| pułapka sprzętowa w trakcie dołączania | łamie sekwencję otwierania kanałów; wolno tylko hak w procesie |
 
-## Jak to działa (droga B)
-
-Host wchodzi normalnie — CONTINUE, potem hub. DLL zamienia w `UEngine::LoadMap`
-skok `je` na dwa `NOP`-y (`0x143BEC200`), przez co gra **sama** woła
-`UWorld::Listen` przy każdym ładowaniu mapy. Sprawdzone 12.08: **host nasłuchuje
-także w hubie** — jest tam żywy `IpNetDriver`.
-
-**Uruchomienie:**
-```
-tools/stop.sh
-WF_GAMESCOPE=1 WF_W=1100 WF_H=620 WF_PREFIX=~/.local/share/witchfire-mp/compat1 \
-  WF_INJECT=proxy nohup tools/launch-instance2.sh &
-# gracz klika CONTINUE
-echo 127.0.0.1 > <Saved compat2>/WFCoop_join_ip.txt
-WF_GAMESCOPE=1 WF_PREFIX=~/.local/share/witchfire-mp/compat2 \
-  WF_INJECT=proxy nohup tools/launch-instance2.sh &
-```
-
-Przebudowa i wdrożenie: `tools/wdroz-dll.sh` (gry muszą być zamknięte).
+---
 
 ## Co jest zrobione
 
 | | dowód |
 |---|---|
 | obaj gracze w jednym świecie, broń klienta działa | ponad dwie godziny wspólnej gry 11.08 |
-| hipoteza 28 rozstrzygnięta: host zdrowy bez trampolin, winowajca śmierci klienta wskazany co do instrukcji | próba kontrolna 14:39–14:49, `KNOWLEDGE.md` |
+| **klient przeżywa dołączenie w hubie** (`fix_smycz`) | 12.08: `SMYCZ: 1` w 5 s po travelu, połączenie 453 s, objęcie pionka pełne |
 | host bez duplikatu ekwipunku (`fix_dup`) | gracz: „host działa jak na singleplayer" |
 | mapa atrybutów ruchu klienta (`fix_attrs`) | `przed=0.000 po=355.000` |
-| host nasłuchuje **także w hubie** | żywy `IpNetDriver` przy hoście w hubie, 12.08 |
+| host nasłuchuje **także w hubie** | żywy `IpNetDriver` przy hoście w hubie |
 | ściany #1 (`0x24`) i #2 (`0x430`) | próby kontrolne: bez strażnika awaria wraca |
+| dekompilator w warsztacie | `tools/dekompiluj.sh`, cztery ustalenia w pierwszej godzinie |
 
-## Narzędzia (`tools/`, wszystkie sprawne)
+---
 
-Analiza **bez uruchomionej gry**: `obraz.py` (deasemblacja, odwołania, literały
-ze zrzutu), `warunki.py` (kto ustawia który warunek maszyny stanów),
-`pole.py` (kto czyta/zapisuje dane pole struktury), `szukaj.py` (dokumentacja
-z nagłówkiem sekcji), `przejscia.py` (graf przejść z danych gry).
+## ZWROT 12.08 — dlaczego celem jest hub, nie wyprawa
 
-Na żywej grze: `ue-props.py` (właściwości przez refleksję — **stąd bierze się
-offsety pól, których nie ma w zrzucie**), `ue-objects.py`, `stan-gracza.py`,
-`ue-snapshot.py`, `sygnatura.py` (grupuje awarie), `read-crash-xml.py`,
-`stos-watku.py`, `zrzut.sh`.
+Dotychczasowy przepływ (host wchodzi SAM na wyprawę, klient dołącza do TRWAJĄCEJ
+misji) to najtrudniejszy przypadek sieciowy w Unrealu, wybrany przypadkiem.
+Właściwy jest odwrotny: obaj spotykają się w hubie, a `ServerTravel` przenosi ich
+razem. Menu główne jest na tej samej mapie co hub, więc to stamtąd startuje
+wszystko.
 
-Nagrywanie: `obserwator.sh` (wykrywa uruchomienie gry i sam zapisuje sesję),
-`rejestrator.py` (szereg czasowy obu graczy; `--podsumuj` zwija do rozkładów),
-`czuwak.sh` (awarie z kontekstem), `dozorca.sh`.
+**Kamień milowy M1′: sesja żyje w hubie i przeżywa podróż tam i z powrotem.**
+Pierwsza połowa jest zrobiona (klient dołącza i przeżywa). Zostaje wejście
+klienta i wspólna podróż.
 
-Niesprawdzone: `wejscie.py` — wejście przez `/dev/uinput` (urządzenie powstaje
-i jądro je widzi; czy **gra** je przyjmuje, nie wiadomo).
-
-## Zasady pracy
-
-**Są w `PROMPT-NOWY-CZAT.md` i tylko tam.** Cztery najdroższe:
-nie wołaj funkcji gry bez potwierdzonej sygnatury **i nie drogą, której gra sama
-nie używa**; wyzwalacz opieraj na zmierzonym, nie na oczywistym; zanim powiesz
-„nie działa", sprawdź, czy okno pomiaru zawiera zjawisko; wrażenie gracza to
-pomiar, nie anegdota.
-
-**Piąta, dopisana 12.08 po trzech wpadkach jednej nocy:** *pojedynczy odczyt
-z zewnątrz nie opisuje stanu — próbkuj przebieg w czasie, zanim cokolwiek
-nazwiesz.* Tej nocy trzy razy z rzędu wzięto migawkę za opis: „pionek
-w spadaniu" (naprawdę `Walking` w 95% czasu), „dołączanie w hubie działa"
-(naprawdę stan przejściowy między 46 a 110 sekundą), „wyzwalacz nie zadziałał"
-(naprawdę okno pomiaru sprzed zjawiska).
+**Droga alternatywna** („dwie symulacje i duch", bez silnika sieciowego UE) jest
+rozpisana w `PROMPT-DUCH.md`. Gracz 12.08 zdecydował: **zostajemy przy obecnej**,
+bo tylko ona prowadzi do wspólnych przeciwników i łupu.

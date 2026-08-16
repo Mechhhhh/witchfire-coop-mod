@@ -253,6 +253,7 @@ static SetClientTravelFn g_setClientTravel = nullptr;
 // zdefiniowanych po travelu. Baza modulu trzymana osobno, bo na watku gry nie
 // chcemy wolac GetModuleHandle przy kazdym wywolaniu.
 static void wfcoopWyjmijBron(uintptr_t base);
+static void tikTrybGry(uintptr_t base);
 static void kanalTick(uintptr_t base);
 static void tikNapelniania(uintptr_t base);
 static void tikWarunkuRuchu(uintptr_t base);
@@ -266,6 +267,11 @@ extern "C" void wfcoopOnGameThread()
     // wczesniejszym ponizej — inaczej u hosta (ktory nie ma uzbrojonego
     // travelu) nigdy by sie nie wykonalo.
     if (g_bazaModulu) wfcoopWyjmijBron(g_bazaModulu);
+
+    // Przywrocenie trybu wejscia po travelu — z watku gry, bo to ProcessEvent
+    // na kodzie gry. Musi isc PRZED wyjsciem travelowym ponizej, inaczej
+    // wykonaloby sie tylko raz.
+    if (g_bazaModulu) tikTrybGry(g_bazaModulu);
 
     // Kanal stanu ruchu MUSI isc stad, a nie z watku pulsu: wysylka to
     // `ProcessEvent` -> siec, czyli kod gry. Wolanie go z obcego watku bylo juz
@@ -2635,6 +2641,142 @@ static bool patchObjecieLog(uintptr_t base)
     return zalozone > 0;
 }
 
+// ── LATKA fix_wejscie: po dolaczeniu klient nie przyjmuje ZADNEGO wejscia ───
+//
+// Objaw (12.08, potwierdzony przez gracza wielokrotnie): po travelu do hosta
+// w oknie klienta nie dziala nic — WSAD, mysz ani Esc — choc gra zyje, zegar
+// swiata idzie 1.00, kamera renderuje swiat hosta.
+//
+// Co zostalo WYKLUCZONE pomiarem, zeby nie szukac tu drugi raz:
+//   * warstwa okien i fokus systemu — wejscie w tym samym oknie dziala
+//     BEZ zarzutu PRZED dolaczeniem (250 probek ruchu, sprint 800, unik 1502);
+//   * wylaczniki wejscia w obiektach — po travelu `bIgnoreInput`=0,
+//     `MouseCaptureMode`=2 (tryb gry), `IgnoreMoveInput`/`IgnoreLookInput`=0,
+//     `LocalPlayer.PlayerController` wskazuje nowy kontroler. Zrzut TEGO SAMEGO
+//     procesu przed i po travelu nie pokazuje w nich zadnej roznicy;
+//   * „menu zostawia tryb UI" — gracz wszedl u siebie przez CONTINUE (tryb gry
+//     zmierzony: przechwyt myszy 3 -> 2) i po travelu i tak stracil wejscie.
+//
+// Zostaje warstwa Slate: travel niszczy stary widget viewportu i tworzy nowy,
+// a fokus/przechwycenie nie wracaja do niego same. Tego nie widac w zadnym
+// UObject, bo `FSlateApplication` nie jest UObject.
+//
+// Naprawa wola WLASNA funkcje gry, jej wlasna droga:
+//   `DimensionPlayerControllerBase::SetInputModeGameOnly(bool bConsumeCaptureMouseDown)`
+// Sygnatura POTWIERDZONA refleksja (`tools/ue-funcs.py --sygnatury`), nie
+// zgadnieta z deasemblacji — jeden parametr `Bool`, natywna 0x141C5D830,
+// `Native,BlueprintCallable`, czyli gra sama chodzi po nia przez `ProcessEvent`.
+// To rozni ja od `fix_state`, ktory wolal warunki droga, ktorej gra NIE uzywa.
+//
+// Wywolanie idzie z watku gry, przez gniazdo 68 (`ProcessEvent`), bramkowane
+// markerem `WFCoop_fix_wejscie.txt`, z licznikiem w logu (zasada 9).
+static bool g_wejscieWlaczone = false;
+static uintptr_t g_ufTrybGry = 0;         // UFunction SetInputModeGameOnly
+static unsigned g_wejscieWywolan = 0;
+static ULONGLONG g_wejscieNastepne = 0;
+
+// Lokalny kontroler gracza: ten, pod ktorym siedzi `DimensionLocalPlayer`.
+// Tym samym testem odroznia sie hosta od klienta w reszcie biblioteki.
+static uintptr_t znajdzKontrolerLokalny(uintptr_t base)
+{
+    const uintptr_t tab = base + addr::GUObjectArray_OFF + 0x10;
+    const uintptr_t chunks = *(const uintptr_t*)tab;
+    const int32_t ile    = *(const int32_t*)(tab + 0x14);
+    const int32_t nchunk = *(const int32_t*)(tab + 0x1C);
+    if (!sensownyWsk(chunks) || ile <= 0 || nchunk <= 0) return 0;
+
+    char nazwaKl[128], nazwaGracza[128];
+    for (int32_t ci = 0; ci < nchunk; ++ci) {
+        const uintptr_t blok = ((const uintptr_t*)chunks)[ci];
+        if (!sensownyWsk(blok)) continue;
+        int32_t tu = ile - ci * 65536;
+        if (tu > 65536) tu = 65536;
+        if (tu <= 0) break;
+        for (int32_t i = 0; i < tu; ++i) {
+            const uintptr_t obj = *(const uintptr_t*)(blok + (uintptr_t)i * 0x18);
+            if (!sensownyWsk(obj)) continue;
+            const uintptr_t klasa = *(const uintptr_t*)(obj + UOBJ_CLASS_OFF);
+            if (!sensownyWsk(klasa)) continue;
+            if (!nazwaObiektu(base, klasa, nazwaKl, sizeof nazwaKl)) continue;
+            // Nazwa klasy wystarcza: kontroler gracza jest w tej grze zawsze
+            // blueprintem `DimensionPlayerController_C`.
+            if (strcmp(nazwaKl, "DimensionPlayerController_C") != 0) continue;
+            const uintptr_t gracz = *(const uintptr_t*)(obj + addr::PC_PLAYER);
+            if (!sensownyWsk(gracz)) continue;
+            const uintptr_t klasaGracza = *(const uintptr_t*)(gracz + UOBJ_CLASS_OFF);
+            if (!sensownyWsk(klasaGracza)) continue;
+            if (!nazwaObiektu(base, klasaGracza, nazwaGracza, sizeof nazwaGracza)) continue;
+            if (strcmp(nazwaGracza, "DimensionLocalPlayer") == 0) return obj;
+        }
+    }
+    return 0;
+}
+
+// `UFunction` `SetInputModeGameOnly` z klasy `DimensionPlayerControllerBase`.
+// Sprawdzamy WLASCICIELA, nie samo imie: w grze jest tez statyczna
+// `UWidgetBlueprintLibrary::SetInputMode_GameOnly` o innej sygnaturze
+// (bierze kontroler jako parametr) i pomylka konczylaby sie zla ramka.
+static uintptr_t znajdzUFTrybGry(uintptr_t base)
+{
+    const uintptr_t tab = base + addr::GUObjectArray_OFF + 0x10;
+    const uintptr_t chunks = *(const uintptr_t*)tab;
+    const int32_t ile    = *(const int32_t*)(tab + 0x14);
+    const int32_t nchunk = *(const int32_t*)(tab + 0x1C);
+    if (!sensownyWsk(chunks) || ile <= 0 || nchunk <= 0) return 0;
+
+    char nazwa[128], nazwaKl[128], nazwaWl[128];
+    for (int32_t ci = 0; ci < nchunk; ++ci) {
+        const uintptr_t blok = ((const uintptr_t*)chunks)[ci];
+        if (!sensownyWsk(blok)) continue;
+        int32_t tu = ile - ci * 65536;
+        if (tu > 65536) tu = 65536;
+        if (tu <= 0) break;
+        for (int32_t i = 0; i < tu; ++i) {
+            const uintptr_t obj = *(const uintptr_t*)(blok + (uintptr_t)i * 0x18);
+            if (!sensownyWsk(obj)) continue;
+            const uintptr_t klasa = *(const uintptr_t*)(obj + UOBJ_CLASS_OFF);
+            if (!nazwaObiektu(base, klasa, nazwaKl, sizeof nazwaKl)) continue;
+            if (strcmp(nazwaKl, "Function") != 0) continue;
+            if (!nazwaObiektu(base, obj, nazwa, sizeof nazwa)) continue;
+            if (strcmp(nazwa, "SetInputModeGameOnly") != 0) continue;
+            const uintptr_t wl = *(const uintptr_t*)(obj + UOBJ_OUTER_OFF);
+            if (!sensownyWsk(wl) || !nazwaObiektu(base, wl, nazwaWl, sizeof nazwaWl)) continue;
+            if (strcmp(nazwaWl, "DimensionPlayerControllerBase") == 0) return obj;
+        }
+    }
+    return 0;
+}
+
+static void tikTrybGry(uintptr_t base)
+{
+    if (!g_wejscieWlaczone || !g_ufTrybGry) return;
+    // Budzet: probujemy przez ~2 minuty od zaladowania, potem cisza. Kod
+    // wykonywany co klatke musi byc tani (zasada 7) — caly przemial tablicy
+    // obiektow idzie najwyzej raz na 2 s i tylko dopoki nie wyczerpiemy prob.
+    if (g_wejscieWywolan >= 60) return;
+    const ULONGLONG teraz = GetTickCount64();
+    if (teraz < g_wejscieNastepne) return;
+    g_wejscieNastepne = teraz + 2000;
+
+    const uintptr_t pc = znajdzKontrolerLokalny(base);
+    if (!pc) return;
+    if (!gniazdoSensowne((void*)pc, addr::SLOT_PROCESS_EVENT, "ProcessEvent(PC)")) return;
+
+    // Parametr: jeden `Bool`. Bufor z zapasem i wyzerowany, zeby `ProcessEvent`
+    // nie czytal smieci, gdyby uklad ramki byl szerszy, niz mowi refleksja.
+    unsigned char par[16] = {};
+    par[0] = 1;                       // bConsumeCaptureMouseDown
+
+    using PEFn = void(__fastcall*)(void*, void*, void*);
+    auto** vt = *(void***)pc;
+    ((PEFn)vt[addr::SLOT_PROCESS_EVENT])((void*)pc, (void*)g_ufTrybGry, &par);
+
+    ++g_wejscieWywolan;
+    if (g_wejscieWywolan <= 3 || (g_wejscieWywolan % 10) == 0)
+        logLine("WEJSCIE: SetInputModeGameOnly wolane na kontrolerze 0x%llX "
+                "(wywolanie %u)", (unsigned long long)pc, g_wejscieWywolan);
+}
+
 static bool patchKanalStanu(uintptr_t base)
 {
     const uintptr_t tab = base + addr::GUObjectArray_OFF + 0x10;
@@ -4709,6 +4851,23 @@ static DWORD WINAPI heartbeat(LPVOID)
         // Przejsciowki limitow ruchu — zakladane tutaj z tego samego powodu co
         // liczniki: potrzebuja gotowej tablicy obiektow. Sluza do pomiaru
         // (`log_speed`) i do naprawy mapy atrybutow (`fix_attrs`).
+        // Przywrocenie trybu wejscia po travelu (`fix_wejscie`). Tutaj tylko
+        // ZNAJDUJEMY UFunction — samo wolanie idzie z watku gry (`tikTrybGry`),
+        // bo to kod gry. Szukamy raz: przemial tablicy obiektow jest drogi.
+        if (g_wejscieWlaczone && !g_ufTrybGry && g_bazaModulu && w) {
+            g_ufTrybGry = znajdzUFTrybGry(g_bazaModulu);
+            if (g_ufTrybGry)
+                logLine("WEJSCIE: znalazlem UFunction SetInputModeGameOnly (0x%llX)",
+                        (unsigned long long)g_ufTrybGry);
+        }
+        if (g_wejscieWlaczone) {
+            static unsigned ostatnio = 0;
+            if (g_wejscieWywolan != ostatnio) {
+                ostatnio = g_wejscieWywolan;
+                logLine("WEJSCIE: wywolan SetInputModeGameOnly: %u", ostatnio);
+            }
+        }
+
         if (g_logObjecie) {
             static bool zalozone = false;
             if (!zalozone && g_bazaModulu && w) zalozone = patchObjecieLog(g_bazaModulu);
@@ -5147,6 +5306,18 @@ static DWORD WINAPI worker(LPVOID)
             patchEffectsPawnNullGuard(base);
         } else {
             logLine("EFEKTY: brak markera WFCoop_fix_effects.txt — nie latam");
+        }
+    }
+
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_fix_wejscie.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_wejscieWlaczone = true;
+            logLine("WEJSCIE: marker WFCoop_fix_wejscie.txt — po travelu bede "
+                    "wolal wlasna SetInputModeGameOnly gry");
+        } else {
+            logLine("WEJSCIE: brak markera WFCoop_fix_wejscie.txt — nie przywracam trybu");
         }
     }
 

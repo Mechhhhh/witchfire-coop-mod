@@ -2044,6 +2044,97 @@ Naprawa: strażnik nulla na `0x141B7DDA0`, marker `fix_smycz`, licznik pominię�
 | host paruje wątek gry ~50 s PO zerwaniu połączenia (hipoteza 32) — objaw inny niż zamrożenie przy dołączaniu | 14:43:14: `futex_wait` bez limitu (`0x7f08d4565144`, `val 0x80`), wątek gry 0 tik/s przy renderze 241 FPS; takt = pierwszy 30-s cykl napełniania po „bez Player"; na hoście sieroty: 4 bronie, kontroler bez pionka. Gracz: „to się zawsze działo" |
 | po zerwaniu host dalej OBSŁUGUJE zombie klienta | `NAPELNIANIE #29` dla kontrolera klienta 23 s po zamknięciu połączenia, już jako „bez Player" |
 
+
+## Wejście klienta po dołączeniu — co ustalono 12.08 po południu
+
+**Objaw:** po dołączeniu w hubie klient nie przyjmuje ŻADNEGO wejścia — ani WSAD,
+ani myszy, ani Esc. Świat renderuje się normalnie, zegar gry idzie 1.00.
+
+**Miara, która to rozstrzyga bez zgadywania:** `ControlRotation`
+(`PlayerController+0x288`, przez refleksję) zmienia się wyłącznie od ruchu myszy
+gracza. Narzędzie: `tools/sonda-wejscia.py` (host jako próba kontrolna w tym samym
+oknie czasu — bez niego cisza u klienta jest dwuznaczna).
+
+**Pomiar 17:05, host żywy przez całe okno:** host 121 zmian na 1499 próbek
+(pełen zakres obrotu), klient **0 zmian**, wartości zamrożone na `pitch 6.94`,
+`yaw 102.28`. Te same dwie liczby wyszły w KAŻDEJ instancji klienta tego dnia —
+to wartość startowa, której nic nigdy nie ruszyło.
+
+### Co zostało WYKLUCZONE pomiarem — nie wracać
+
+| hipoteza | czym obalona |
+|---|---|
+| „to okno nie potrafi przyjmować wejścia" | **przed** dołączeniem gracz gra w nim normalnie: 250 próbek ruchu, sprint 800, unik 1502, `HasMovementInput=1` w 232/250 |
+| tryb wejścia (`FInputModeUIOnly`, `bIgnoreInput`) | po travelu `bIgnoreInput=0`, `MouseCaptureMode=2` (tryb gry), `IgnoreMoveInput`/`IgnoreLookInput`=0 — zrzut TEGO SAMEGO procesu przed i po travelu nie pokazuje różnicy |
+| „menu zostawia tryb interfejsu" | gracz wszedł u klienta przez CONTINUE (przechwyt myszy zmierzony `3→2`) i po travelu i tak stracił wejście |
+| brak wiązań wejścia u klienta | liczniki tablic `UInputComponent` identyczne z hostem (12 klawiszowych, 1, 1) |
+| stan kontrolera | pełny zrzut właściwości klient vs host: różnią się WYŁĄCZNIE `Role`, `RemoteRole`, `bReplicates`, `ClientCap`, `LastSpectatorStateSynchTime` i wskaźniki klas — nic z wejścia |
+| **naprawa przez `SetInputModeGameOnly`** | łatka `fix_wejscie` wołała własną funkcję gry (sygnatura potwierdzona refleksją, `Native,BlueprintCallable`, natywna `0x141C5D830`) **60 razy z wątku gry**; wywołanie DZIAŁAŁO — przechwyt myszy zmienił się `2→1` — a wejścia dalej nie było |
+
+### Granice metody (kupione tego dnia)
+
+- **Przez gamescope nie da się podać wejścia z zewnątrz** ani przesunąć kursora
+  gry — zgłoszenie gracza, potwierdzone próbami. To, co brałem za reakcję kursora
+  na moje zdarzenia, było ruchem gracza.
+- **Bez gamescope nie wolno mierzyć**: gra pauzuje się przy utracie fokusu, a to
+  psuje klienta — czyli pomiar bez kompozytora mierzy inne zjawisko.
+- **`hyprctl dispatch movecursor` w tej konfiguracji nie działa** (próba kontrolna
+  przy zamkniętych grach: trzy próby, kursor stoi). Kursorem rusza wyłącznie
+  `/dev/uinput` — stąd `tools/kursor.py`. Zanim z tego wyszedł wniosek
+  „kursor przytrzymany przez gamescope", obaliła go ta sama próba kontrolna.
+- **Cisza w sondzie przy nieruchomym HOŚCIE to brak pomiaru, nie wynik.**
+  Przebieg 17:37 dał 0 zmian po obu stronach — gracz po prostu nie ruszał myszą.
+
+
+## Dekompilator (Ghidra) — od 12.08 w warsztacie
+
+`tools/dekompiluj.sh <adres>` zwraca pseudokod C funkcji, bez uruchomionej gry.
+Czyta ten sam zrzut co `obraz.py` (`.text` na dysku jest zaszyfrowany przez
+SteamStub, więc Ghidra puszczona na `.exe` widziałaby śmieci). Projekt leży
+w `~/dev/witchfire-ghidra`, poza repo i poza katalogami z kropką — Ghidra
+odmawia takich ścieżek. Import bez analizy całości: skrypt sam deasembluje
+wskazane miejsce, więc odpowiedź przychodzi w ułamku sekundy zamiast po
+godzinach przemiału 114 MB.
+
+**Kiedy używać:** gdy pytanie dotyczy LOGIKI (warunki, pętle, struktury) albo
+kodu spoza świata `UObject`, gdzie refleksja jest ślepa. Do sprawdzenia jednej
+instrukcji dalej szybszy jest `obraz.py fun`.
+
+### Pierwszy wynik: ściana #3 trzyma ZAMEK przez cały przebieg listy
+
+```c
+undefined8 FUN_1419e7b40(longlong param_1, undefined8 param_2, undefined8 param_3)
+{
+  (*_DAT_1447cdb30)(param_1 + 0x360);              // WEJŚCIE w sekcję krytyczną
+  plVar3 = *(longlong **)(param_1 + 0x240);        // tablica słuchaczy
+  plVar1 = plVar3 + *(int *)(param_1 + 0x248);     // + licznik
+  for (; plVar3 != plVar1; plVar3 = plVar3 + 1) {
+    plVar2 = (longlong *)*plVar3;
+    if (plVar2 != 0) {                             // gra sprawdza NULL...
+      (**(code **)(*plVar2 + 0x10))(plVar2, param_2, param_3);  // ...tu pada
+    }
+  }
+  (*_DAT_1447cdb38)(param_1 + 0x360);              // WYJŚCIE z sekcji
+  return 1;
+}
+```
+
+To spina dwa objawy, które dotąd chodziły osobno:
+
+| objaw | jak zamek go tłumaczy |
+|---|---|
+| awaria hosta `0x1419E7BA1` (ściana #3) | wiszący słuchacz, wywołanie przez `[obiekt+0x10]` |
+| **park wątku gry hosta** na `futex_wait` (14:43 i 17:15) | wyjątek leci **w środku sekcji krytycznej**, więc `Unlock` pod `+0x360` NIGDY się nie wykonuje — każdy inny wątek czekający na ten sam zamek stoi w nieskończoność |
+
+Czyli „awaria z zawieszoną obsługą wyjątku" i „host zamarza" to najpewniej
+**jedno zdarzenie**, nie dwa: pada wołanie w pętli, a niezwolniony zamek zabija
+resztę. To także tłumaczy, czemu park przychodził w takcie napełniania — tam
+akurat inny wątek sięga po ten sam zasób.
+
+**Konsekwencja dla naprawy:** strażnik ma odrzucać wpis PRZED wywołaniem
+(`fix_lista` robił dokładnie to), ale musi być tani i nie wychodzić z pętli inną
+drogą niż gra. Zanim wróci, przepisać go z tego kształtu, nie z asemblera.
+
 ## Hipotezy OBALONE — nie wracać
 
 | hipoteza | czym obalona |
