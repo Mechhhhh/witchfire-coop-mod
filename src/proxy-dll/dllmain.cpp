@@ -5090,6 +5090,112 @@ static bool               g_logRozdzielacz = false;   // marker `WFCoop_log_rozd
 static volatile unsigned* g_rozdzWejscie   = nullptr; // A: wejscia do 0x143820F10
 static volatile unsigned* g_rozdzKontroler = nullptr; // B: dotarlo do PC::InputKey
 
+// ── GLOBALNA FLAGA WEJSCIA (marker `WFCoop_log_globalne.txt`) ──────────────
+//
+// Po co: `GameInstance + 0x2A0` to `GlobalInputEnabled` — u hosta 1, u klienta
+// 0 (WIEDZA §3w). Jest globalna dla instancji gry, wiec gasi wejscie w CALEJ
+// grze naraz: klawisze, mysz i Esc. Jako jedyna dotad ma zasieg zgodny
+// z objawem.
+//
+// Czego NIE da sie zrobic zapisem z zewnatrz: flaga ma lancuch powiadomien
+// (`OnGlobalInputEnabledValueChanged` osobno na postaci i na broni), wiec
+// wpisanie bajta nie odtwarza tego, co sie stalo, gdy flaga szla na zero —
+// sprawdzone, liczniki ruchu nie drgnely. Trzeba wiedziec, KIEDY spada.
+//
+// Setter `0x1418953E0`, `rcx` = GameInstance, `dl` = nowa wartosc:
+//
+//   sub   rsp,0x28                  ; 4 B
+//   movzx eax,[rcx+0x2a0]           ; 7 B   <- razem 11 kradzionych bajtow
+//   mov   [rcx+0x2a0],dl
+//   cmp   al,dl / je                ; rozglaszanie tylko przy ZMIANIE
+//
+// Liczymy OSOBNO wlaczenia i wylaczenia. Sam licznik wywolan nie powiedzialby,
+// w ktora strone szla flaga — a to jest cale pytanie.
+namespace addr {
+constexpr uintptr_t SetGlobalInput_OFF = 0x18953E0;
+}
+
+static bool               g_logGlobalne = false;   // marker `WFCoop_log_globalne.txt`
+static volatile unsigned* g_globWlacz   = nullptr; // wywolania z dl != 0
+static volatile unsigned* g_globWylacz  = nullptr; // wywolania z dl == 0
+
+static bool patchGlobalInputLog(uintptr_t base)
+{
+    auto* fn = (unsigned char*)(base + addr::SetGlobalInput_OFF);
+    static const unsigned char oczekiwane[11] = {
+        0x48, 0x83, 0xEC, 0x28,                          // sub rsp,0x28
+        0x0F, 0xB6, 0x81, 0xA0, 0x02, 0x00, 0x00         // movzx eax,[rcx+0x2a0]
+    };
+    if (memcmp(fn, oczekiwane, sizeof oczekiwane) != 0) {
+        logLine("GLOBALNE: bajty pod 0x%llX inne niz oczekiwane — NIE latam",
+                (unsigned long long)(uintptr_t)fn);
+        return false;
+    }
+
+    unsigned char* tr = nullptr;
+    for (uintptr_t a = base + 0x08000000; a < base + 0x40000000; a += 0x10000) {
+        tr = (unsigned char*)VirtualAlloc((void*)a, 0x1000,
+                                          MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (tr) break;
+    }
+    if (!tr) { logLine("GLOBALNE: brak miejsca na trampoline"); return false; }
+
+    //   +0x00 test dl,dl
+    //   +0x02 jz   -> +0x0C
+    //   +0x04 inc  dword [rip+0x21] -> +0x2B   (wlaczenia)
+    //   +0x0A jmp  -> +0x12
+    //   +0x0C inc  dword [rip+0x1D] -> +0x2F   (wylaczenia)
+    //   +0x12 sub  rsp,0x28                    oryginal
+    //   +0x16 movzx eax,[rcx+0x2a0]            oryginal
+    //   +0x1D jmp  qword ptr [rip+0] -> +0x23
+    //   +0x23 <adres powrotu, 8 B>             = setter + 11
+    //   +0x2B <licznik wlaczen, 4 B>
+    //   +0x2F <licznik wylaczen, 4 B>
+    //
+    // `test` psuje znaczniki, ale wolno: pierwsza oryginalna instrukcja to
+    // `sub rsp,0x28`, ktora i tak ustawia je na nowo, a nic po drodze ich nie
+    // czyta. Zaden rejestr nie jest ruszany.
+    enum { OFF_POWROT = 0x23, OFF_WL = 0x2B, OFF_WYL = 0x2F };
+    unsigned char code[] = {
+        0x84, 0xD2,                              // test dl,dl
+        0x74, 0x08,                              // jz   -> +0x0C
+        0xFF, 0x05, 0x21, 0x00, 0x00, 0x00,      // inc  [rip+0x21] -> wlaczenia
+        0xEB, 0x06,                              // jmp  -> +0x12
+        0xFF, 0x05, 0x1D, 0x00, 0x00, 0x00,      // inc  [rip+0x1D] -> wylaczenia
+        0x48, 0x83, 0xEC, 0x28,                  // sub  rsp,0x28        (oryginal)
+        0x0F, 0xB6, 0x81, 0xA0, 0x02, 0x00, 0x00,// movzx eax,[rcx+0x2a0](oryginal)
+        0xFF, 0x25, 0x00, 0x00, 0x00, 0x00,      // jmp  [rip+0] -> powrot
+        0,0,0,0,0,0,0,0,                         // +0x23 adres powrotu
+        0,0,0,0,                                 // +0x2B wlaczenia
+        0,0,0,0                                  // +0x2F wylaczenia
+    };
+    if (sizeof(code) != OFF_WYL + 4) {
+        logLine("GLOBALNE: BLAD WEWNETRZNY — trampolina %zu B, oczekiwano %d",
+                sizeof(code), OFF_WYL + 4);
+        return false;
+    }
+    const uintptr_t powrot = base + addr::SetGlobalInput_OFF + 11;
+    memcpy(code + OFF_POWROT, &powrot, sizeof powrot);
+    memcpy(tr, code, sizeof code);
+    g_globWlacz  = (volatile unsigned*)(tr + OFF_WL);
+    g_globWylacz = (volatile unsigned*)(tr + OFF_WYL);
+
+    DWORD stare = 0;
+    if (!VirtualProtect(fn, 11, PAGE_EXECUTE_READWRITE, &stare)) {
+        logLine("GLOBALNE: VirtualProtect odmowil"); return false;
+    }
+    const int32_t rel = (int32_t)((intptr_t)tr - (intptr_t)(fn + 5));
+    fn[0] = 0xE9; memcpy(fn + 1, &rel, 4);
+    for (int i = 5; i < 11; ++i) fn[i] = 0x90;
+    VirtualProtect(fn, 11, stare, &stare);
+    FlushInstructionCache(GetCurrentProcess(), fn, 11);
+
+    logLine("GLOBALNE: log SetGlobalInputEnabled zalozony (0x%llX -> trampolina 0x%llX)",
+            (unsigned long long)(uintptr_t)fn, (unsigned long long)(uintptr_t)tr);
+    return true;
+}
+
+
 // ── LICZNIKI WIAZANIA RUCHU (marker `WFCoop_log_ruch.txt`) ─────────────────
 //
 // Po co: 16.08 zmierzono, ze u klienta znacznik `pionek+0xC74` **nigdy nie
@@ -5264,6 +5370,22 @@ static DWORD WINAPI heartbeat(LPVOID)
                     g_ruchWejscieA ? *g_ruchWejscieA : 0u,
                     g_ruchWejscieB ? *g_ruchWejscieB : 0u,
                     g_ruchZaProg   ? *g_ruchZaProg   : 0u);
+        }
+
+        // Globalna flaga wejscia (hipoteza 42). Meldunek TYLKO przy zmianie —
+        // ta funkcja jest wolana rzadko, wiec cisza w logu jest tu informacja,
+        // a nie brakiem pomiaru. Sama wartosc flagi dopisana obok licznikow,
+        // zeby dalo sie odczytac stan bez zagladania do pamieci z zewnatrz.
+        if (g_logGlobalne) {
+            static bool zal = false;
+            if (!zal && g_bazaModulu) zal = patchGlobalInputLog(g_bazaModulu);
+            static unsigned ostW = 0xFFFFFFFF, ostWy = 0xFFFFFFFF;
+            const unsigned w  = g_globWlacz  ? *g_globWlacz  : 0u;
+            const unsigned wy = g_globWylacz ? *g_globWylacz : 0u;
+            if (w != ostW || wy != ostWy) {
+                ostW = w; ostWy = wy;
+                logLine("GLOBALNE: SetGlobalInputEnabled — wlaczen=%u wylaczen=%u", w, wy);
+            }
         }
 
         if (g_logOwnerWlaczony) {
@@ -5578,6 +5700,20 @@ static DWORD WINAPI worker(LPVOID)
                     "wejscia na pietrze Win32 i na pietrze gry");
         } else {
             logLine("WEJSCIE-LICZNIK: brak markera WFCoop_log_wejscie.txt — nie licze");
+        }
+    }
+
+    // Log globalnej flagi wejscia (hipoteza 42). Czysty pomiar — hak tylko
+    // liczy i wraca, niczego nie pomija i nie wola.
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_log_globalne.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_logGlobalne = true;
+            logLine("GLOBALNE: marker WFCoop_log_globalne.txt — loguje zmiany "
+                    "globalnej flagi wejscia");
+        } else {
+            logLine("GLOBALNE: brak markera WFCoop_log_globalne.txt — nie loguje");
         }
     }
 
