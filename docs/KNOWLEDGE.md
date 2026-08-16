@@ -2829,3 +2829,162 @@ To jest dokładnie ten przypadek, o którym mówi zasada 10: **refleksja jest
 ślepa, rozstrzyga dekompilacja.** Zacząć od `tools/dekompiluj.sh 0x141A01390`
 i z pseudokodu odczytać, które offsety są tu istotne — a potem porównać te
 surowe bajty host kontra klient, tak jak dziś porównaliśmy właściwości.
+
+## 3p. Przetwarzanie wiązań u klienta CHODZI (16.08, 23:2x)
+
+Po tym, jak wszystkie ogniwa dostarczania okazały się zdrowe (§3m), naturalną
+hipotezą było: „`UPlayerInput::InputKey` tylko ZAPISUJE stan klawisza, a
+wiązania odpala osobny przebieg wołany co klatkę — i to on u klienta nie
+chodzi". Pasowało idealnie do objawu „nie działa absolutnie nic", bo taki
+przebieg jest wspólny dla klawiszy, myszy i Esc.
+
+**Obalone pomiarem.** `UPlayerInput + 0x3A0` to licznik zdarzeń (`EventCount`),
+zwiększany przez każde zdarzenie wejścia — potwierdzone w dekompilacji trzech
+funkcji (`0x143C191D0` `InputKey`, `0x143C194B0` `InputMotion` i ścieżka osi) —
+a przebieg przetwarzania zeruje go co klatkę. Próbkowanie 150 s po 20 Hz, obie
+strony naraz, gracz naciskał klawisze najpierw u hosta, potem u klienta:
+
+| | host | klient |
+|---|---|---|
+| próbek | 2994 | 2994 |
+| szczyt licznika | 5 | **6** |
+| próbek niezerowych | 12 | **20** |
+| wzrostów / spadków | 10 / 10 | **20 / 19** |
+| wartość końcowa | 0 | 0 |
+
+Klient zebrał **więcej** zdarzeń niż host w tym samym oknie (bo gracz naciskał
+u niego), a kształt przebiegu jest **identyczny**: licznik skacze do 5–6
+i natychmiast wraca do zera. Czyli u klienta zdarzenia są zapisywane **i
+konsumowane** dokładnie tak jak u hosta.
+
+Narzędzie: `tools/licznik-zdarzen.py` — pomiar **nie wymaga przebudowy
+biblioteki ani restartu gier**, chodzi na tym, co już stoi.
+
+**Zastrzeżenie:** pomiar dowodzi, że coś zeruje licznik co klatkę tak samo po
+obu stronach. NIE identyfikuje, która dokładnie funkcja to robi — nie udało się
+jednoznacznie wskazać `ProcessInputStack` w tablicy metod (sprawdzone i
+odrzucone gniazda: `+0x2A8` = `0x143C1A8A0` to strefa martwa osi, `0x143C194B0`
+to `InputMotion`). Do identyfikacji wrócić, gdy będzie potrzebna.
+
+### Bilans: wszystko po drodze jest identyczne
+
+Na dziś klient i host zgadzają się na KAŻDYM zmierzonym poziomie:
+
+* komunikaty Win32, filtr gry, rozdzielacz widoku, `PlayerController::InputKey`
+  — liczniki w tych samych proporcjach (§3j, §3l),
+* `UPlayerInput` — **zero różnic** we wszystkich właściwościach (§3o),
+* `UInputComponent` — te same tablice (12/24, 1/4, 1/4),
+* zapis i konsumpcja stanu klawiszy — ten sam kształt (ta sekcja).
+
+Kontroler klienta ma pionka, `bBlockInput=False`, jeden kontroler w świecie.
+Różnice w kontrolerze to wyłącznie pola sieciowe (`Role` 3/2, `RemoteRole` 1/3,
+`bReplicates`, `NetConnection`) plus cztery tablice o nieustalonym znaczeniu:
+`+0x4C0` (13 kontra 11), `+0x578` (5 kontra 4), `+0x588` (1 kontra 0),
+`+0x5D8` (16 kontra 14). **`+0x588` sprawdzono**: u hosta trzyma słabą
+referencję o indeksie 156330, czyli `DimensionInventoryComponent` pionka — to
+NIE jest stos wejścia. Pozostałe trzy niesprawdzone.
+
+**Gdzie szukać dalej.** Skoro wiązania są przetwarzane, a nic się nie dzieje,
+pytanie brzmi: czy wiązanie ruchu w ogóle ODPALA, czy odpala i jego skutek jest
+odrzucany. Tu wraca stary trop z 11.08: `HasMovementInput` u klienta nigdy nie
+staje się 1, a gra liczy go **ze znacznika czasu pod `pionek+0xC74`**
+(`KNOWLEDGE.md`, §3f). Ten znacznik stempluje się w chwili przyłożenia wejścia
+ruchu. Najtańszy następny pomiar to **licznik na funkcji, która ten znacznik
+zapisuje** — po obu stronach, z hostem jako wzorcem.
+
+## 3r. ZNALEZIONE (16.08, 23:2x) — u klienta wiązanie ruchu NIE ODPALA
+
+Najostrzejszy wynik tej sesji, z próbą kontrolną w tym samym oknie czasu.
+Próbkowanie 150 s po 20 Hz, `tools/licznik-zdarzen.py`, gracz naciskał klawisze
+najpierw u hosta, potem u klienta. Surowy wynik: `logs/h37/znacznik-ruchu-2323.txt`.
+
+| | host | klient |
+|---|---|---|
+| licznik zdarzeń `UPlayerInput+0x3A0` | skacze i wraca do zera (11 wzrostów / 11 spadków) | **skacze i wraca do zera** (7 / 7) |
+| **znacznik `pionek+0xC74`** | **343 zmiany**, 344 różne wartości, 3523,900 → 3904,955 | **0 zmian, stale −1,000** |
+
+`-1.0f` to wartość, którą wpisuje **konstruktor postaci** (`0x141853CA3`,
+`ADDRESSES.md` §7). Czyli u klienta ten znacznik nie został ostemplowany **ani razu
+od chwili powstania pionka** — mimo że w tym samym oknie czasu jego licznik
+zdarzeń wejścia rósł i był konsumowany.
+
+**Co to przesądza.** Przerwa leży dokładnie między dwoma punktami:
+
+* **jest:** zdarzenie zapisane w `UPlayerInput` i skonsumowane przez przebieg
+  przetwarzania wiązań (§3p),
+* **nie ma:** wywołania `AddMovementInput`, bo gra stempluje `pionek+0xC74`
+  w dwóch miejscach — `0x14187E285` i `0x14187E60C` — i **oba leżą tuż po
+  `AddMovementInput`, w LOKALNEJ obsłudze wejścia** (`ADDRESSES.md` §7).
+
+To jest pierwszy poziom w całym łańcuchu, na którym host i klient **nie są
+identyczne**. Wszystkie wcześniejsze były zgodne co do liczby albo co do
+zawartości (§3j, §3l, §3m, §3o, §3p).
+
+**Dlaczego to porządkuje też stare ustalenia.** 11.08 zmierzono, że
+`HasMovementInput` u klienta nigdy nie staje się 1, a gra liczy ten warunek
+**ze znacznika `pionek+0xC74`** (§3f). Wtedy wyglądało to na osobną usterkę
+maszyny stanów i próbowano nadpisywać warunek — bezskutecznie i słusznie
+obalone. Teraz widać, że `HasMovementInput=0` było **skutkiem**: znacznik nigdy
+nie jest stemplowany, bo wiązanie ruchu nie odpala.
+
+**Następny krok jest wąski i tani:** zdekompilować okolicę `0x14187E285`
+i `0x14187E60C` (funkcje lokalnej obsługi wejścia ruchu) i sprawdzić, **czy
+w ogóle są wołane u klienta**, a jeśli tak — który warunek w środku odcina
+stempel. Licznik przelotowy w obu miejscach, po obu stronach, wzorzec z hosta.
+Uwaga: `pole.py` sygnalizuje, że te dwa adresy leżą **poza `.pdata`**, więc
+granice funkcji trzeba ustalić przez `obraz.py fun`, nie ufać rozpiętościom.
+
+### 3r-bis. Rozebrana funkcja, która stempluje znacznik (`0x14187DFC0`)
+
+Granice funkcji: **`0x14187DFC0` → `0x14187E2A4`** (740 B). `.pdata` podaje tu
+bzdurę („długość 87"), a Ghidra na tym zrzucie nie składa jej w całość — start
+ustalony przez szukanie strumienia instrukcji trafiającego w stempel. Bliźniacza
+funkcja z drugim stemplem: **`0x14187E2B0`** (stempel pod `0x14187E60C`). Dwie
+siostrzane obsługi osi ruchu (przód/bok).
+
+Szkielet, z zaznaczeniem wszystkich wyjść przed stemplem:
+
+```
+0x14187DFC0  push rbx; push rdi; sub rsp,0xa8
+0x14187DFCA  mov  rdi,[rcx+0x258]      ; pionek -> Controller
+0x14187DFE2  je   0x14187E293          ; [1] brak kontrolera -> wyjscie
+0x14187DFFC  jg   0x14187E293          ; [2] zly typ kontrolera (szybkie IsA)
+0x14187E00A  jne  0x14187E293          ; [2] j.w.
+...
+0x14187E10E  movaps xmm0,xmm7          ; WARTOSC OSI podana wiazaniu
+0x14187E111  andps  xmm0,[0x1448107E0] ; wartosc bezwzgledna (maska 0x7FFFFFFF)
+0x14187E118  comiss xmm0,xmm6          ; porownanie z progiem
+0x14187E123  jbe    0x14187E28B        ; [3] |wartosc| <= prog -> WYJSCIE ZA STEMPLEM
+...
+0x14187E26D  call [rax+0x738]          ; AddMovementInput
+0x14187E279  call [rax+0x160]          ; GetWorld
+0x14187E27F  mov  ecx,[rax+0x5a0]      ; World->TimeSeconds
+0x14187E285  mov  [rbx+0xc74],ecx      ; STEMPEL — bezwarunkowy, na koncu funkcji
+0x14187E2A4  ret
+```
+
+Uwaga na `0x14187E1B4 jne 0x14187E273`: ta gałąź pomija `AddMovementInput`, ale
+**stempluje**. Czyli sam brak stempla wyklucza tę drogę.
+
+**Wyjścia [1] i [2] są u klienta WYKLUCZONE pomiarem:** `pionek+0x258` u klienta
+to `0x5B6C8080`, czyli jego własny `DimensionPlayerController_C`, z tą samą
+tablicą metod co u hosta (`0x145090B60`), a klasa jest po obu stronach ta sama.
+
+**Zostaje wyjście [3] albo brak wywołania w ogóle.** To są dwie różne przyczyny
+i rozróżnia je jeden przebieg:
+
+| pomiar u klienta | znaczenie |
+|---|---|
+| licznik na wejściu `0x14187DFC0` = 0 | wiązanie osi **w ogóle nie dispatchuje** — szukać w budowie mapy wiązań |
+| wejście > 0, a stempel = 0 | wiązanie odpala, ale **z wartością zerową** — szukać w wyliczaniu wartości osi z klawiszy |
+
+**Przepis na następną przebudowę** (dwa liczniki przelotowe, wzorzec
+`zalozLicznikPrzelotowy` z `dllmain.cpp`, marker `log_ruch`, po OBU stronach):
+
+* `0x14187DFC0` — wejście. **Prolog nie dzieli się na 5 bajtów**
+  (`53 57 48 81 EC A8 00 00 00`): trzeba ukraść **9 bajtów** i dopełnić
+  czterema `NOP`-ami, tak jak przy `EFEKTY` (16 B).
+* `0x14187E285` — stempel (5 B: `89 8B 74 0C 00 00` to 6 B — sprawdzić bajty
+  przed wpisaniem, `obraz.py bajty`).
+* Sprawdzić `obraz.py xref` na każdym podmienianym bajcie — w tej funkcji jest
+  gęsto skoków wewnętrznych, a `0x14187E28B` i `0x14187E293` są celami.

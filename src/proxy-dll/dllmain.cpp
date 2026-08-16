@@ -4966,6 +4966,69 @@ constexpr uintptr_t DoKontrolera_OFF  = 0x3821254;   // movss xmm3,[rdi+0x2c]
 // `tools/obraz.py xref` na kazdym z pieciu adresow). `inc` psuje tylko
 // znaczniki procesora, wiec wolno go postawic pierwszym tylko tam, gdzie
 // znaczniki nie sa zywe — na wejsciu do funkcji zawsze, w srodku po sprawdzeniu.
+// `ile` to liczba KRADZIONYCH bajtow — musi obejmowac cale instrukcje i byc
+// >= 5 (tyle zajmuje skok). Nadmiar ponad 5 dopelniamy NOP-ami w miejscu latki.
+static volatile unsigned* zalozLicznikPrzelotowyN(uintptr_t base, uintptr_t offset,
+                                                  const unsigned char* oryginal, int ile,
+                                                  const char* nazwa)
+{
+    auto* fn = (unsigned char*)(base + offset);
+    if (ile < 5 || ile > 16) {
+        logLine("LICZNIK: %s — BLAD WEWNETRZNY, %d kradzionych bajtow", nazwa, ile);
+        return nullptr;
+    }
+    if (memcmp(fn, oryginal, (size_t)ile) != 0) {
+        logLine("LICZNIK: %s — bajty pod 0x%llX inne niz oczekiwane, NIE latam",
+                nazwa, (unsigned long long)(uintptr_t)fn);
+        return nullptr;
+    }
+
+    unsigned char* tr = nullptr;
+    for (uintptr_t a = base + 0x08000000; a < base + 0x40000000; a += 0x10000) {
+        tr = (unsigned char*)VirtualAlloc((void*)a, 0x1000,
+                                          MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (tr) break;
+    }
+    if (!tr) { logLine("LICZNIK: %s — brak miejsca na trampoline", nazwa); return nullptr; }
+
+    //   +0x00        inc  dword [rip+disp] -> licznik
+    //   +0x06        <ile bajtow oryginalu>
+    //   +0x06+ile    jmp  qword ptr [rip+0] -> powrot
+    //   +0x0C+ile    <adres powrotu, 8 B>
+    //   +0x14+ile    <licznik, 4 B>
+    const int OFF_ORYG = 0x06;
+    const int OFF_SKOK = OFF_ORYG + ile;
+    const int OFF_POWROT = OFF_SKOK + 6;
+    const int OFF_LICZNIK = OFF_POWROT + 8;
+    unsigned char code[64] = {};
+    // inc dword [rip+disp]; disp liczony od konca tej instrukcji (+0x06)
+    code[0] = 0xFF; code[1] = 0x05;
+    const int32_t dispLicz = OFF_LICZNIK - OFF_ORYG;
+    memcpy(code + 2, &dispLicz, 4);
+    memcpy(code + OFF_ORYG, oryginal, (size_t)ile);
+    code[OFF_SKOK] = 0xFF; code[OFF_SKOK + 1] = 0x25;   // jmp [rip+0]
+    const uintptr_t powrot = base + offset + (uintptr_t)ile;
+    memcpy(code + OFF_POWROT, &powrot, sizeof powrot);
+
+    memcpy(tr, code, (size_t)(OFF_LICZNIK + 4));
+
+    DWORD stare = 0;
+    if (!VirtualProtect(fn, (SIZE_T)ile, PAGE_EXECUTE_READWRITE, &stare)) {
+        logLine("LICZNIK: %s — VirtualProtect odmowil", nazwa);
+        return nullptr;
+    }
+    const int32_t rel = (int32_t)((intptr_t)tr - (intptr_t)(fn + 5));
+    fn[0] = 0xE9; memcpy(fn + 1, &rel, 4);
+    for (int i = 5; i < ile; ++i) fn[i] = 0x90;         // dopelnienie do calych instrukcji
+    VirtualProtect(fn, (SIZE_T)ile, stare, &stare);
+    FlushInstructionCache(GetCurrentProcess(), fn, (SIZE_T)ile);
+
+    logLine("LICZNIK: %s — zalozony na 0x%llX (%d B -> trampolina 0x%llX)",
+            nazwa, (unsigned long long)(uintptr_t)fn, ile,
+            (unsigned long long)(uintptr_t)tr);
+    return (volatile unsigned*)(tr + OFF_LICZNIK);
+}
+
 static volatile unsigned* zalozLicznikPrzelotowy(uintptr_t base, uintptr_t offset,
                                                  const unsigned char oryginal[5],
                                                  const char* nazwa)
@@ -5026,6 +5089,61 @@ static volatile unsigned* zalozLicznikPrzelotowy(uintptr_t base, uintptr_t offse
 static bool               g_logRozdzielacz = false;   // marker `WFCoop_log_rozdzielacz.txt`
 static volatile unsigned* g_rozdzWejscie   = nullptr; // A: wejscia do 0x143820F10
 static volatile unsigned* g_rozdzKontroler = nullptr; // B: dotarlo do PC::InputKey
+
+// ── LICZNIKI WIAZANIA RUCHU (marker `WFCoop_log_ruch.txt`) ─────────────────
+//
+// Po co: 16.08 zmierzono, ze u klienta znacznik `pionek+0xC74` **nigdy nie
+// zostaje ostemplowany** (0 zmian, stale -1.0 z konstruktora), podczas gdy
+// u hosta w tym samym oknie zmienia sie 343 razy — a licznik zdarzen wejscia
+// po obu stronach zachowuje sie identycznie (WIEDZA §3r).
+//
+// Stempel siedzi na koncu funkcji `0x14187DFC0` (i blizniaczej `0x14187E2B0`),
+// zaraz po `AddMovementInput`. Rozbior funkcji (§3r-bis) zostawil DWIE mozliwe
+// przyczyny, ktore trzeba rozroznic, bo prowadza w zupelnie inne miejsca:
+//
+//   * funkcja NIE JEST WOLANA        -> wiazanie osi nie dispatchuje,
+//   * jest wolana z ZEROWA wartoscia -> wiazanie odpala, ale wartosc osi
+//                                       nie powstaje z klawiszy.
+//
+// Rozroznia je licznik na wejsciu plus licznik ZA progiem `jbe` (`0x14187E129`):
+//
+//   wejscie=0                 -> nie dispatchuje,
+//   wejscie>0, za-progiem=0   -> odpala z zerem,
+//   wejscie>0, za-progiem>0   -> dochodzi dalej, a stempla i tak nie ma
+//                                (wtedy szukac miedzy progiem a koncem funkcji).
+//
+// Wyjscia [1] „brak kontrolera" i [2] „zly typ kontrolera" sa juz wykluczone
+// odczytem z zywej gry — `pionek+0x258` u klienta wskazuje na jego wlasny
+// kontroler, z ta sama tablica metod co u hosta.
+namespace addr {
+constexpr uintptr_t RuchA_OFF     = 0x187DFC0;   // push rbx;push rdi;sub rsp,0xa8 (10 B)
+constexpr uintptr_t RuchB_OFF     = 0x187E2B0;   // blizniacza os
+constexpr uintptr_t RuchZaProg_OFF= 0x187E129;   // mov rax,[rbx+0x968]           (7 B)
+}
+
+static bool               g_logRuch     = false;   // marker `WFCoop_log_ruch.txt`
+static volatile unsigned* g_ruchWejscieA = nullptr;
+static volatile unsigned* g_ruchWejscieB = nullptr;
+static volatile unsigned* g_ruchZaProg   = nullptr;
+
+static bool patchRuchLiczniki(uintptr_t base)
+{
+    // 40 53 | 57 | 48 81 EC A8 00 00 00 — trzy instrukcje, razem 10 bajtow.
+    // Piec bajtow NIE wystarczy (rozcieloby `sub rsp,0xa8`), wiec kradniemy
+    // dziesiec i dopelniamy NOP-ami.
+    static const unsigned char prolog[10] = {
+        0x40, 0x53, 0x57, 0x48, 0x81, 0xEC, 0xA8, 0x00, 0x00, 0x00
+    };
+    // 48 8B 83 68 09 00 00 — mov rax,[rbx+0x968], jedna instrukcja, 7 bajtow.
+    static const unsigned char zaProg[7] = {
+        0x48, 0x8B, 0x83, 0x68, 0x09, 0x00, 0x00
+    };
+
+    g_ruchWejscieA = zalozLicznikPrzelotowyN(base, addr::RuchA_OFF, prolog, 10, "ruch-wejscie-A");
+    g_ruchWejscieB = zalozLicznikPrzelotowyN(base, addr::RuchB_OFF, prolog, 10, "ruch-wejscie-B");
+    g_ruchZaProg   = zalozLicznikPrzelotowyN(base, addr::RuchZaProg_OFF, zaProg, 7, "ruch-za-progiem");
+    return g_ruchWejscieA || g_ruchWejscieB || g_ruchZaProg;
+}
 
 static bool patchRozdzielaczLiczniki(uintptr_t base)
 {
@@ -5135,6 +5253,17 @@ static DWORD WINAPI heartbeat(LPVOID)
             logLine("ROZDZIELACZ: wejsc=%u do-kontrolera=%u",
                     g_rozdzWejscie   ? *g_rozdzWejscie   : 0u,
                     g_rozdzKontroler ? *g_rozdzKontroler : 0u);
+        }
+
+        // Liczniki wiazania ruchu (hipoteza 40). Tak samo co sekunde i tak samo
+        // bezwarunkowo — baza spoczynkowa jest czescia pomiaru.
+        if (g_logRuch) {
+            static bool zal = false;
+            if (!zal && g_bazaModulu) zal = patchRuchLiczniki(g_bazaModulu);
+            logLine("RUCH-WIAZANIE: wejscieA=%u wejscieB=%u za-progiem=%u",
+                    g_ruchWejscieA ? *g_ruchWejscieA : 0u,
+                    g_ruchWejscieB ? *g_ruchWejscieB : 0u,
+                    g_ruchZaProg   ? *g_ruchZaProg   : 0u);
         }
 
         if (g_logOwnerWlaczony) {
@@ -5449,6 +5578,20 @@ static DWORD WINAPI worker(LPVOID)
                     "wejscia na pietrze Win32 i na pietrze gry");
         } else {
             logLine("WEJSCIE-LICZNIK: brak markera WFCoop_log_wejscie.txt — nie licze");
+        }
+    }
+
+    // Liczniki wiazania ruchu (hipoteza 40). Osobny marker, zeby dalo sie
+    // wlaczyc sam ten pomiar — trzy nowe latki naraz to trzy nowe sposoby na
+    // wywalenie gry, a przebieg kontrolny musi byc mozliwy (zasada 9).
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_log_ruch.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_logRuch = true;
+            logLine("RUCH-WIAZANIE: marker WFCoop_log_ruch.txt — licze wywolania wiazania ruchu");
+        } else {
+            logLine("RUCH-WIAZANIE: brak markera WFCoop_log_ruch.txt — nie licze");
         }
     }
 

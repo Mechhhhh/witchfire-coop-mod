@@ -64,7 +64,27 @@ zdarzenie.
 
 ---
 
-## NASTĘPNY KROK — wejść DO `PlayerController::InputKey` (hipoteza 38)
+## NASTĘPNY KROK — wdrożyć liczniki wiązania ruchu (hipoteza 40)
+
+**Kod jest napisany, zbudowany i zacommitowany. Zostało go wdrożyć.**
+
+1. `tools/wdroz-dll.sh` (gry muszą być zamknięte),
+2. marker `WFCoop_log_ruch.txt` po OBU stronach,
+3. przebieg jak zwykle, gracz gra chwilę u hosta i próbuje u klienta.
+
+| wynik u klienta | znaczenie |
+|---|---|
+| `wejscieA/B = 0` | wiązanie osi **w ogóle nie dispatchuje** → szukać w budowie mapy wiązań |
+| wejście > 0, `za-progiem = 0` | wiązanie odpala **z zerową wartością** → szukać w wyliczaniu osi z klawiszy |
+| wejście > 0, `za-progiem` > 0 | dochodzi dalej, a stempla i tak nie ma → szukać między progiem a końcem funkcji |
+| zera po obu stronach | brak pomiaru — powtórzyć |
+
+Wzorzec zawsze z hosta: u niego znacznik zmienia się 343 razy na 150 s, więc
+liczniki mają być wyraźnie niezerowe.
+
+---
+
+## Poprzedni krok (zrobiony) — `PlayerController::InputKey` (hipoteza 38)
 
 Hipotezy 36 i 37 są **obalone**, obie pomiarem z próbą kontrolną. Zostało
 jedno wywołanie, w którym wejście u klienta jeszcze jest, a po którym już go
@@ -112,8 +132,12 @@ Potem `ServerTravel` (hipoteza 29, trop: gniazdo `+0x440` w tablicy metod
 
 ## Stan wdrożenia
 
-Biblioteka **wdrożona 16.08**, `md5=834ba5e2e6312a790a2cffbb1913d4e2` — zgodna
-z `src/proxy-dll/build/xinput1_3.dll`. Zgodność ze źródłem sprawdzać
+**UWAGA: w grze stoi STARSZA biblioteka niż w repo.** Wdrożone jest
+`md5=834ba5e2e6312a790a2cffbb1913d4e2` (napisy `WEJSCIE-LICZNIK:` i
+`ROZDZIELACZ:`). W `src/proxy-dll/build/` leży nowsza, z licznikami wiązania
+ruchu (`RUCH-WIAZANIE:`, marker `log_ruch`) — **niewdrożona**, bo wdrożenie
+wymaga zamknięcia gier, a te chodziły. Pierwszy krok następnej sesji:
+`tools/wdroz-dll.sh` i marker `log_ruch` po obu stronach. Zgodność ze źródłem sprawdzać
 **napisami**, nie sumą (build niepowtarzalny — mingw wpisuje czas w nagłówek PE).
 Ta wersja ma napisy `SMYCZ:`, `WEJSCIE:`, `WEJSCIE-LICZNIK:` **i `ROZDZIELACZ:`**.
 
