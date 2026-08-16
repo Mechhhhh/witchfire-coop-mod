@@ -2473,3 +2473,280 @@ Dodatkowo: pomiar z 21:13 (dwadzieścia identycznych trafień, rejestry niebęd�
 wskaźnikami na obiekty) jest **odrzucony** — trafiłem w to miejsce w innym
 kontekście, niż zakładałem, i nie wolno z niego nic wnioskować.
 
+
+## 3j. HIPOTEZA 36 OBALONA (16.08) — zdarzenia wejścia DOCIERAJĄ do gry klienta
+
+Pytanie brzmiało: czy po dołączeniu do gry klienta w ogóle docierają zdarzenia
+wejścia. Odpowiedź: **docierają, i to na obu piętrach warstwy dostarczania.**
+Problem jest wewnątrz gry, poniżej punktu, który dotąd uważaliśmy za wejściowy.
+
+### Przyrząd — dwa piętra naraz i baza spoczynkowa
+
+Biblioteka (marker `log_wejscie`, po OBU stronach) liczy:
+
+* **piętro Win32** — podmiana wpisu `PeekMessageW` w tablicy importów pliku gry;
+  osobne kubełki dla klawiatury (`WM_KEY*`), myszy (`WM_MOUSE*`), surowego
+  wejścia (`WM_INPUT`) i komunikatów fokusu;
+* **piętro gry** — trampolina zliczająca na `0x141A020B0`.
+
+Licznik idzie do logu **co sekundę bezwarunkowo**, także gdy stoi. To nie jest
+gadulstwo: bez tego nie dałoby się orzec, czy `0x141A020B0` jest wołane raz na
+zdarzenie (jak twierdziła dekompilacja), czy co klatkę — a w drugim przypadku
+każda liczba z przebiegu byłaby bezwartościowa.
+
+**Baza spoczynkowa zmierzona:** host 54 s i klient 64 s bez ani jednego
+komunikatu wejścia Win32, przy `gra` +0. Filtr jest **zdarzeniowy**. Przyrząd
+ważny.
+
+### Wynik — przebieg 16.08, 22:09
+
+Obie instancje siedzą w jednym gamescope, więc gracz podaje im wejście NA
+ZMIANĘ. Widać to w szeregu jako czyste rozdzielenie okien:
+
+| okno | host `gra` | klient `gra` |
+|---|---|---|
+| 22:09:10–16 | 62–234/s | **0** |
+| **22:09:17–41** | **0** | **11–297/s** |
+| 22:09:43–54 | 36–289/s | **0** |
+
+W oknie 22:09:17–41 klient zebrał `gra`≈2950, `klaw`=699, `mysz`=1415,
+`raw`=6690, przy **zerze u hosta w tej samej chwili** — czyli próba kontrolna
+jest spełniona i to nie jest brak pomiaru. Gracz w tym samym czasie: *„nic się
+nie zmieniło po mojej stronie, czyli klient nie może nic, a host sobie gra
+normalnie"*.
+
+**Wniosek: warstwa dostarczania jest niewinna.** Zdarzenia wchodzą do gry
+klienta setkami na sekundę i giną wewnątrz niej.
+
+**ZASTRZEŻENIE do atrybucji — ZDJĘTE 22:58 pomiarem, patrz §3l.** Klient wchodzi
+do rozdzielacza w tym samym stosunku do klawiszy Win32 co host (0,83 kontra
+0,72), więc zdarzenia idą drogą widoku i poniższy akapit jest już tylko zapisem,
+skąd wątpliwość się wzięła. `0x141A020B0` ma
+**sześciu** wołających: po jednym w obsłudze osi (`0x141A01082`) i klawiszy
+(`0x141A012BC`), oraz **cztery w jednej funkcji odpytującej `0x141A3D200`**
+(sprawdza zapamiętane wartości osi z `+0x378..0x38c` i zwraca „czy cokolwiek
+przekracza próg"). Niezerowy licznik dowodzi więc, że zdarzenia wejścia w grze
+są — ale nie dowodzi, którą z tych dróg. Za wersją „drogą widoku" przemawia to,
+że stosunek `gra`/`mysz` u klienta (≈1,85) jest praktycznie taki sam jak u hosta
+(≈1,96), gdzie ta droga jest pewna, oraz że w bezruchu licznik stoi (więc
+odpytywanie nie chodzi co klatkę). To jest przesłanka, nie atrybucja.
+**Rozstrzyga jeden pomiar:** licznik wejścia do `0x143820F10` obok licznika
+filtra w tej samej sekundzie. Zgodne ⇒ 36 obalone tak, jak zapisano.
+`0x143820F10` ≈ 0 przy filtrze > 0 ⇒ ten paragraf wymaga poprawki.
+
+**Kubełek `fokus` NIE DZIAŁA — nie opierać na nim niczego.** Miał odróżniać
+„kompozytor nie dostarczył" od „gracz nie kliknął w to okno". Przez cały
+przebieg pokazał **0 po obu stronach**, także wtedy, gdy gracz ewidentnie
+przełączał okna: pod gamescope komunikaty `WM_ACTIVATE`/`WM_SETFOCUS`/
+`WM_ACTIVATEAPP` po prostu nie przychodzą. Rolę tę przejęła **przeciwfaza
+kubełków wejścia** — host niezerowy przy kliencie na zerze i odwrotnie — i to
+jest lepszy świadek, bo artefakt pomiarowy nie układałby się w przeciwfazę do
+aktywności drugiej instancji. Tak mierzyć następnym razem.
+
+Odczyt wyniku daje `tools/wejscie-liczniki.py` (przyrosty na sekundę, obie
+strony w jednym szeregu, wykrywanie bazy spoczynkowej).
+
+### KOREKTA — czym naprawdę jest `0x141A020B0`
+
+`ADDRESSES.md` opisywał go jako „jedyny punkt, przez który przechodzi KAŻDE
+zdarzenie wejścia". Dekompilacja mówi co innego — to **test progu**:
+
+```c
+bool FUN_141a020b0(obiekt, FKey *klucz, float a, float b) {
+  // klucz na liście wyjątków (+0x398, licznik +0x3a0) -> false
+  // klucza nie ma w mapie (+0x3a8) -> true
+  // dla osi liczy dlugosc wektora z pol +0x388..0x394
+  return b <= a;                      // porownanie z progiem z mapy (+0x18 wpisu 0x28 B)
+}
+```
+
+Jako **detektor** jest dobry (wołany raz na zdarzenie, przez wszystkie trzy
+obsługi i cztery dalsze miejsca) i to potwierdził pomiar. Ale **rozdzielaczem
+nie jest** — i nie wolno z niego wnioskować, co się z wejściem dzieje dalej.
+
+### Prawdziwy rozdzielacz: `0x143820F10` (`UGameViewportClient::InputKey`)
+
+Wołany z obsługi klawiszy `0x141A01190` zaraz po teście progu. Jego mapa,
+z zaznaczonymi miejscami, gdzie zdarzenie ginie **bez żadnego objawu**:
+
+```c
+if ((*vtable)[0x178]() == 0) {                       // IgnoreInput() — zmierzone: 0
+    ...
+    petla po tablicy (widok+0x318, licznik +0x320)   // CICHE WYJSCIE 1
+    ...
+    gracz = FUN_143BE46E0(GEngine, widok, ControllerId);
+    if (gracz != 0 && *(gracz + 0x30) != 0)          // CICHE WYJSCIE 2 i 3
+        (**(gracz+0x30) + 0xC18)(...);               // PlayerController::InputKey
+}
+```
+
+| gniazdo | co to |
+|---|---|
+| `0x143BE46E0` | `GetLocalPlayerFromControllerId(GEngine, widok, id)` |
+| `ULocalPlayer +0x30` | `PlayerController` |
+| `PlayerController` vtable `+0xC18` | `InputKey` |
+| widok `+0x318` / `+0x320` | tablica dodatkowych odbiorców (wpisy po 16 B) |
+
+### Co z tych ciekłych wyjść już WYKLUCZONO pomiarem (16.08, 22:1x)
+
+| trop | pomiar | werdykt |
+|---|---|---|
+| pusta tablica odbiorców `widok+0x318` | **host ma ją tak samo pustą** (`ile=0`) i działa | martwy — zdrowa instancja jest wzorcem (zasada 11) |
+| `bIgnoreInput` (`widok+0x359`) | 0 po obu stronach | martwy **tylko jako POLE** — patrz zastrzeżenie niżej |
+| `LocalPlayer+0x30` puste u klienta | `0x690E9A00`, niezerowe | martwy |
+| `LocalPlayer+0x30` wskazuje na STARY kontroler po travelu | to **ten sam** kontroler, który sonda widzi jako kontroler klienta; obie strony mają tę samą tablicę metod `0x145090B60` | martwy |
+
+Odczyt `LocalPlayer` u klienta zdjęty **po tym, jak gracz przypadkiem
+spauzował klienta**, więc formalnie jest orientacyjny — ale pauza nie zmienia
+wskaźnika na kontroler, a host czytany w tej samej chwili zachowuje się tak
+samo. Do potwierdzenia przy najbliższym czystym przebiegu.
+
+**ZASTRZEŻENIE do `bIgnoreInput` — czytaliśmy POLE, a gra woła METODĘ.**
+Rozdzielacz nie sięga po `widok+0x359`; robi wywołanie **wirtualne**
+`(**(code **)(*param_1 + 0x178))(param_1)`. Żywy obiekt to
+`BPDimensionGameViewportClient_C`, czyli podklasa, która może to gniazdo
+nadpisać i zwracać coś innego niż zawartość pola. Dlatego w przebiegu 37
+**liczyć GAŁĄŹ, a nie pole** — i przy okazji sprawdzić, czy wpis `+0x178`
+w tablicy metod żywego obiektu prowadzi do wersji podstawowej silnika,
+czy do nadpisania.
+
+**Gdzie szukać dalej:** poniżej `PlayerController::InputKey` (vtable `+0xC18`),
+czyli w `UPlayerInput` i przetwarzaniu wiązań. Najtańszy następny pomiar to hak
+zliczający na `0x143820F10` **z rozbiciem na gałęzie** — która gałąź jest brana
+u klienta, a która u hosta.
+
+## 3k. KOREKTA (16.08) — pętla rozgłaszania ma WŁASNEGO strażnika nulla
+
+Pseudokod `0x1419E7B40` (`tools/dekompiluj.sh`), cała funkcja:
+
+```c
+(*_DAT_1447cdb30)(param_1 + 0x360);              // zamek WZIETY
+plVar3 = *(longlong **)(param_1 + 0x240);
+plVar1 = plVar3 + *(int *)(param_1 + 0x248);
+for (; plVar3 != plVar1; plVar3 = plVar3 + 1) {
+    plVar2 = (longlong *)*plVar3;
+    if (plVar2 != (longlong *)0x0)               // <- STRAZNIK NULLA JUZ TU JEST
+        (**(code **)(*plVar2 + 0x10))(plVar2, param_2, param_3);
+}
+(*_DAT_1447cdb38)(param_1 + 0x360);              // zamek zwolniony DOPIERO TU
+return 1;
+```
+
+Dwie rzeczy, obie ważne:
+
+1. **Zamek obejmuje cały przebieg listy** — potwierdza mechanizm hipotezy 32:
+   wyjątek w środku pętli zostawia zamek wzięty, więc reszta gry staje na
+   `futex_wait`. To jest już dowiedzione pseudokodem, nie domysłem.
+2. **Gra sama pomija nulle.** Awaria pod `0x1419E7BA1` to
+   `call qword ptr [rax+0x10]`, gdzie `rax` (tablica metod) = 2 — czyli
+   słuchacz jest **zwisający**, a nie nullowy. Warunek do dołożenia dotyczy
+   tablicy metod, nie samego wskaźnika. Kod `fix_lista` robi to poprawnie.
+
+### Audyt `fix_lista` — kodowanie trampoliny jest DOBRE
+
+Sprawdzone bajt po bajcie: wszystkie cztery skoki lądują w `+0x2E`
+(pominięcie), adres powrotu = `0x1419E7B9E`, adres pominięcia = `0x1419E7BA4`,
+rozmiar 0x46 zgodny z `OFF_LICZNIK+4`, `r11` bezpieczny (i tak ginie w `call`),
+żaden skok w grze nie celuje w podmieniane 6 bajtów.
+
+**Czyli przyczyna zamrożenia hosta NIE jest ustalona.** Próba kontrolna
+hipotezy 28 zdjęła `fix_lista` **i** `fix_ekwipunek` naraz, więc nigdy nie
+rozstrzygnęła, który z nich zamrażał. Najtańszy następny krok: przebieg
+z włączonym **tylko** `fix_lista`.
+
+## 3l. HIPOTEZA 37 ROZSTRZYGNIĘTA (16.08, 22:58) — wejście DOCHODZI do kontrolera
+
+Przebieg z licznikami rozdzielacza (marker `log_rozdzielacz`, po obu stronach).
+Klient dołączył 22:58:09–14 pierwszy raz, świeża biblioteka, host w hubie.
+
+| | host | klient |
+|---|---|---|
+| wejść do `0x143820F10` (`UGameViewportClient::InputKey`) | 328 | 417 |
+| dociera do `PlayerController::InputKey` (`0x143821254`) | **328 — 100%** | **417 — 100%** |
+| wejść na komunikat klawiatury Win32 | 0,72 | 0,83 |
+
+Przeciwfaza wzorowa — w każdej sekundzie aktywny jest dokładnie jeden z dwóch
+procesów, drugi ma czyste zero. Okno klienta 22:58:42–22:59:00 (`wejsc` 3–43/s)
+przypada na sekundy, w których host stoi na zerze, więc próba kontrolna jest
+spełniona.
+
+Gracz potwierdził w tym samym oknie czasu: *„klient nie reaguje na żaden input
+z mojej strony"*. Obie połowy pomiaru są więc na miejscu — liczby mówią, że
+wejście dochodzi, a człowiek, że nic z tego nie wynika.
+
+**Wniosek: rozdzielacz jest niewinny.** Zdarzenie klawiszowe u klienta
+przechodzi całą drogę widoku i trafia do `PlayerController::InputKey`
+(vtable `+0xC18`) tak samo często jak u hosta. Strata jest **wewnątrz tego
+wywołania albo poniżej** — w `UPlayerInput`, w przetwarzaniu wiązań albo
+w składaniu osi ruchu.
+
+Licznik „do-kontrolera" stoi pod `0x143821254`, pięć instrukcji przed
+`call [rax+0xC18]`, i **w tym odcinku nie ma żadnego rozgałęzienia**
+(`movss`, `mov`, `mov`, `lea`, `mov`, `call`) — trafienie licznika gwarantuje
+więc wykonanie wywołania, a nie tylko dojście w jego pobliże.
+
+### To domyka ZASTRZEŻENIE do §3j
+
+`0x141A020B0` ma sześciu wołających i nie wiedzieliśmy, którą drogą szły
+zdarzenia policzone przy obalaniu hipotezy 36. Teraz wiadomo: klient wchodzi
+do rozdzielacza w tym samym stosunku do klawiszy Win32 co host (0,83 kontra
+0,72), więc zdarzenia idą **drogą widoku**. Obalenie hipotezy 36 stoi bez
+zastrzeżeń.
+
+### Czego NIE mierzyć tym przyrządem
+
+`wejsc/gra` u zdrowego hosta wynosi **0,06** i to nie jest usterka:
+`0x143820F10` rozdziela KLAWISZE, a licznik `gra` zbiera dodatkowo każdy ruch
+osi myszy i cztery wywołania z funkcji odpytującej `0x141A3D200`. Odnosić
+`wejsc` wyłącznie do `klaw`.
+
+**Oś myszy nie jest jeszcze zmierzona** — ma własny rozdzielacz
+(`UGameViewportClient::InputAxis`), którego nie ohakowaliśmy. Objaw „klient nie
+rusza kamerą" formalnie dotyczy tamtej drogi; ten pomiar dotyczy klawiszy.
+
+## 3m. Droga wejścia klienta, prześledzona do końca (16.08, 23:0x)
+
+Cała ścieżka od komunikatu systemowego do wiązań, z zaznaczeniem, co jest już
+zmierzone. Każde „ciche wyjście" po drodze zostało sprawdzone i **żadne nie
+jest przyczyną**.
+
+| # | ogniwo | adres | stan u klienta |
+|---|---|---|---|
+| 1 | `PeekMessageW` (pętla komunikatów) | IAT pliku gry | **504 klawiszy** — dochodzą |
+| 2 | test progu wejścia | `0x141A020B0` | **1595** — dochodzą |
+| 3 | obsługa klawiszy widoku | `0x141A01190` | (droga do 4) |
+| 4 | `UGameViewportClient::InputKey` | `0x143820F10` | **417 wejść** |
+| 4a | `IgnoreInput()` — wywołanie wirtualne | vtable `+0x178` | nie odcina (bo 4b jest osiągane) |
+| 4b | tablica dodatkowych odbiorców | widok `+0x318`/`+0x320` | pusta — **także u hosta** |
+| 4c | `GetLocalPlayerFromControllerId` | `0x143BE46E0` | zwraca obiekt |
+| 4d | `ULocalPlayer+0x30` (`PlayerController`) | — | niezerowe, zgodne z sondą |
+| 5 | `PlayerController::InputKey` (nadpisany) | `0x1418C7810` (vtable `+0xC18`) | **417 dojść — 100%** |
+| 5a | tablica `PC+0x5b8`/`+0x5c0` | — | niesprawdzona |
+| 6 | `APlayerController::InputKey` | `0x143A64920` | wołane bezwarunkowo z 5 |
+| 6a | **`PlayerController+0x348` (`PlayerInput`)** | — | **`0x531CBB90` — NIE null** (host: `0x2B54B270`) |
+| 7 | `UPlayerInput::InputKey` | `0x141A01390` (vtable `+0x278`) | **← TU SZUKAĆ DALEJ** |
+
+Tablica metod `UPlayerInput` jest po obu stronach ta sama (`0x1450A3470`),
+gniazdo `+0x278` też (`0x141A01390`) — więc klient i host wykonują **ten sam
+kod**, a różnią się wyłącznie danymi.
+
+**Struktura `0x143A64920`, którą trzeba znać do następnego kroku:**
+
+```c
+uVar4 = 0;
+if (*(longlong *)(param_1 + 0x348) != 0)                    // PlayerInput
+    uVar4 = (**(code **)(**(longlong **)(param_1 + 0x348) + 0x278))
+              (PlayerInput, &klucz, param_3, param_4, param_5);   // UPlayerInput::InputKey
+// ... dalej gałąź „gest/wyjątek" zależna od PC+0x438 bit 2, listy PC+0x440
+//     (licznik PC+0x448) i PC+0x298 -> +0x70
+return uVar4;                                                // brak PlayerInput = ciche zero
+```
+
+**Wniosek dla następnej sesji.** Wejście klienta przechodzi siedem ogniw
+i wszystkie mierzone są zdrowe. Zostało jedno: `UPlayerInput::InputKey`
+(`0x141A01390`) i to, co ono robi z **wiązaniami**. Zacząć od dekompilacji tej
+funkcji — bez uruchamiania gry — a dopiero potem stawiać liczniki.
+
+**Nie zapominać o OSI.** Wszystko powyżej dotyczy klawiszy. Ruch myszy ma
+własny rozdzielacz (`UGameViewportClient::InputAxis`, wołany z `0x141A00FD0`)
+i **nie był mierzony ani razu**.

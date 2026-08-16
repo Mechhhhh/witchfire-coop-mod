@@ -1,7 +1,8 @@
 # Zacznij tutaj — stan i następny krok
 
-Stan na **2026-08-16**. Gry są **zamknięte**, nic nie chodzi w tle, repo czyste.
-Ostatnia sesja robocza: 12.08 (od nocy do wieczora).
+Stan na **2026-08-16**, po sesji wieczornej. Repo czyste i wypchnięte.
+**Gry mogą jeszcze chodzić** — sprawdź `tools/find-instance.sh compat1`
+i `compat2`, zanim cokolwiek wdrożysz (`wdroz-dll.sh` wymaga zamkniętych).
 
 ## Co czytać
 
@@ -37,6 +38,22 @@ klienta stoi (0 zmian na 1499 próbek), gdy host w tym samym oknie ma 121 zmian.
 Przed dołączeniem to samo okno przyjmuje wejście bez zarzutu (250 próbek gry
 gracza, sprint 800, unik 1502) — więc psuje je dopiero dołączenie.
 
+**16.08 zawężone dwoma przebiegami do jednego wywołania.** Wejście u klienta
+przechodzi CAŁĄ drogę i ginie dopiero w kontrolerze postaci:
+
+| piętro | klient | host (wzorzec) |
+|---|---|---|
+| komunikaty Win32 | 504 klawisze | 457 |
+| wspólny filtr gry `0x141A020B0` | 1595 | 5910 |
+| wejścia do `UGameViewportClient::InputKey` | 417 | 328 |
+| dojścia do **`PlayerController::InputKey`** | **417 — 100%** | **328 — 100%** |
+| reakcja gracza w grze | **żadna** | normalna gra |
+
+Oba przebiegi miały wzorową przeciwfazę (aktywny dokładnie jeden proces,
+drugi na czystym zerze) i potwierdzenie gracza w tym samym oknie czasu.
+**Strata jest WEWNĄTRZ `PlayerController::InputKey` (vtable `+0xC18`) albo
+poniżej** — `KNOWLEDGE.md` §3j i §3l.
+
 **Dwa problemy poboczne, oba zmierzone:** host pada po ~50 min na wiszącym
 słuchaczu (ściana #3), a przy PONOWNYM dołączeniu klienta parkuje wątek gry
 (`futex_wait`, 0 tików/3 s). Dekompilacja pokazała, że pętla rozgłaszania trzyma
@@ -45,58 +62,76 @@ zdarzenie.
 
 ---
 
-## NASTĘPNY KROK — licznik zdarzeń wejścia (hipoteza 36)
+## NASTĘPNY KROK — wejść DO `PlayerController::InputKey` (hipoteza 38)
 
-Jedyne pytanie, które blokuje wszystko inne: **czy do gry klienta docierają
-zdarzenia wejścia po dołączeniu.** Wykluczone już zostało wszystko po stronie
-gry (tryb wejścia, wiązania, stan kontrolera — patrz `JOURNAL.md`), więc
-zostaje warstwa dostarczania. Odpowiedź daje jeden przebieg.
+Hipotezy 36 i 37 są **obalone**, obie pomiarem z próbą kontrolną. Zostało
+jedno wywołanie, w którym wejście u klienta jeszcze jest, a po którym już go
+nie widać w grze.
 
-**Przepis, wszystko gotowe do napisania:**
+Droga jest już prześledzona do końca i **siedem ogniw jest zmierzonych jako
+zdrowe** — pełna tabela w `KNOWLEDGE.md` §3m. Zostało jedno ogniwo.
 
-1. Hak zliczający na **`0x141A020B0`** — wspólny filtr zdarzeń wejścia gry,
-   wołany przez wszystkie trzy obsługi z tablicy metod `FViewportClient`
-   (`ADDRESSES.md`, sekcja „punkt wejścia zdarzeń"). Wołany **raz na zdarzenie**,
-   nie co klatkę, więc jest tani (zasada 7).
-2. Marker `log_wejscie`, licznik wypisywany do logu co kilka sekund — po
-   **obu** stronach, bo host jest próbą kontrolną.
-3. Przebieg: host w hubie, klient dołącza **pierwszy raz** (ponowne dołączenie
-   parkuje hosta i unieważnia pomiar — sprawdź tiki hosta przed werdyktem),
-   gracz gra chwilę u hosta i próbuje u klienta.
+**Przepis:**
 
-| wynik | znaczenie |
-|---|---|
-| host > 0, klient = 0 | zdarzenia nie docierają do gry klienta → szukać w Slate/oknie, nie w co-opie |
-| host > 0, klient > 0 | zdarzenia docierają, a gra je ignoruje → wracamy do środka gry, z nowym tropem |
-| oba = 0 | **brak pomiaru**, nie wynik — gracz nie grał w tym oknie; powtórzyć |
+1. **`tools/dekompiluj.sh 0x141A01390`** — `UPlayerInput::InputKey`, gniazdo
+   `+0x278` w tablicy metod `0x1450A3470`. Bez uruchamiania gry. Dopiero jego
+   pseudokod powie, co porównywać.
+2. Klient i host wykonują tu **ten sam kod** (ta sama tablica metod, to samo
+   gniazdo), więc różnica jest w DANYCH — szukać w tablicy wiązań i w stanie
+   klawiszy, a nie w kolejnym wyłączniku.
+3. Liczniki dopiero po dekompilacji, i zawsze z wzorcem u hosta (zasada 11).
 
-Potem, w tej kolejności: **przepisać `fix_lista`** z pseudokodu
-(`tools/dekompiluj.sh 0x1419E7B40`) i dopiero wtedy `ServerTravel` (hipoteza 29,
-trop: gniazdo `+0x440` w tablicy metod `UWorld`).
+**Zaraz po tym hipoteza 39 — OŚ MYSZY.** Cały dotychczasowy pomiar dotyczy
+KLAWISZY: `0x143820F10` to `InputKey`. Oś ma własny rozdzielacz
+(`UGameViewportClient::InputAxis`, wołany z `0x141A00FD0` tak samo jak `InputKey`
+z `0x141A01190`) i **nigdy go nie mierzyliśmy**. Objaw „klient nie rusza
+kamerą" formalnie należy do tamtej drogi, więc para liczników na niej to
+najtańsze rozszerzenie, jakie zostało.
+
+**Gotowe do użycia:** marker `log_rozdzielacz` i `tools/wejscie-liczniki.py`
+(przyrosty na sekundę, obie strony w jednym szeregu, cięcie po wyzerowaniu
+licznika przy restarcie). Odnosić `wejsc` do `klaw`, **nigdy do `gra`**.
+
+Dwa tanie kroki, które nie wymagają przebudowy biblioteki:
+
+* **hipoteza 32** — przebieg z włączonym **tylko** `fix_lista` (bez
+  `fix_ekwipunek`). Próba kontrolna h.28 zdjęła oba naraz i nigdy nie
+  rozstrzygnęła, który zamrażał hosta; kod `fix_lista` przeszedł audyt
+  (`KNOWLEDGE.md` §3k);
+* **hipoteza 31b** — przebieg ze zdjętym `fix_smycz`; awaria ma wrócić.
+
+Potem `ServerTravel` (hipoteza 29, trop: gniazdo `+0x440` w tablicy metod
+`UWorld`).
 
 ---
 
 ## Stan wdrożenia
 
-Biblioteka **wdrożona**, `md5=cff407728ca95ad1c16dd365d029680a` — zgodna
+Biblioteka **wdrożona 16.08**, `md5=834ba5e2e6312a790a2cffbb1913d4e2` — zgodna
 z `src/proxy-dll/build/xinput1_3.dll`. Zgodność ze źródłem sprawdzać
 **napisami**, nie sumą (build niepowtarzalny — mingw wpisuje czas w nagłówek PE).
-Ta wersja ma napisy `SMYCZ:` i `WEJSCIE:`.
+Ta wersja ma napisy `SMYCZ:`, `WEJSCIE:`, `WEJSCIE-LICZNIK:` **i `ROZDZIELACZ:`**.
 
 **Markery hosta (compat1):** `always_listen`, `auto_host`, `fix_attrs`,
-`fix_booster`, `fix_dup`, `fix_input`, `late_restart`, `log_objecie`, `map`,
-`no_pause`, `swap_now`, `swap_only`, `watch_pc`.
+`fix_booster`, `fix_dup`, `fix_input`, `late_restart`, `log_objecie`,
+**`log_rozdzielacz`**, **`log_wejscie`**, `map`, `no_pause`, `swap_now`,
+`swap_only`, `watch_pc`.
 
 **Markery klienta (compat2):** `fix_attrs`, `fix_dup`, `fix_effects`,
 `fix_smycz`, `fix_weapon`, `join_delay` (= 60 s), `join_ip` (= 127.0.0.1),
-`log_objecie`.
+`log_objecie`, **`log_rozdzielacz`**, **`log_wejscie`**.
+
+`log_wejscie` zostaje włączony: kosztuje jedną linię logu na sekundę, a daje
+bazę spoczynkową, bez której żaden następny pomiar wejścia nie da się odczytać.
 
 **ZDJĘTE świadomie:**
 
 - `fix_wejscie` — kod został w bibliotece, ale marker jest zdjęty: wywołania
   działały i nic nie dały (hipoteza 35, obalona);
-- `fix_lista`, `fix_ekwipunek` — **zamrażały hosta przy dołączaniu**, do
-  przepisania;
+- `fix_lista`, `fix_ekwipunek` — zdjęte razem, bo **razem** zamrażały hosta
+  przy dołączaniu; który z nich to robił, **nie wiadomo** — próba kontrolna
+  zdjęła oba naraz, a `fix_lista` przeszedł audyt bajt po bajcie
+  (`KNOWLEDGE.md` §3k). Rozstrzyga przebieg z samym `fix_lista`;
 - `fix_state`, `fix_ammo` — wywalały hosta;
 - `fix_przejscia`, `fix_czas` oraz diagnostyka tamtej linii (`log_tryb`,
   `log_kanal`, `log_speed`, `log_ammo`, `log_owner`, `log_fill`, `count_move`).
@@ -137,6 +172,10 @@ zrzucie obrazu — do LOGIKI i do kodu spoza świata `UObject`), `obraz.py`
 `wpisy.py` (gdzie leży wskaźnik na napis — tablice UHT), `warunki.py`,
 `przejscia.py`, `szukaj.py`.
 
+**Odczyt pomiaru wejścia:** `wejscie-liczniki.py` — zamienia linie
+`WEJSCIE-LICZNIK:` z obu logów w przyrosty na sekundę, zestawia host i klienta
+w jednym szeregu i sam wykrywa bazę spoczynkową (`--szereg`, `--od`, `--do`).
+
 **Na żywej grze:** `stan-gracza.py`, `ue-props.py` (**stąd offsety pól, których
 nie ma w zrzucie**), `ue-objects.py`, `ue-funcs.py --sygnatury` (**tak potwierdza
 się sygnaturę przed wołaniem**), `sonda-wejscia.py` (czy wejście dochodzi —
@@ -168,6 +207,9 @@ nazwy plików na angielskie i przepisuje odsyłacze.
 | testy bez gamescope | gra pauzuje się przy utracie fokusu i psuje klienta — pomiar jest bezwartościowy |
 | pomiar po PONOWNYM dołączeniu | host ma wtedy zaparkowany wątek gry; sprawdź tiki, zanim cokolwiek odczytasz |
 | pułapka sprzętowa w trakcie dołączania | łamie sekwencję otwierania kanałów; wolno tylko hak w procesie |
+| **kolejne liczniki na `0x141A020B0`** | zmierzone i zamknięte: zdarzenia DOCIERAJĄ. To test progu, nie rozdzielacz |
+| **strażnik NULLA w pętli rozgłaszania** | gra ma tam własny; awaria to zwisający słuchacz (`rax=2`), nie null |
+| wnioski z pomiaru, w którym host też ma zero | to brak pomiaru. 16.08 sonda `ControlRotation` dała 0/0 przez 90 s, bo gracz akurat nie grał |
 
 ---
 
@@ -182,6 +224,9 @@ nazwy plików na angielskie i przepisuje odsyłacze.
 | host nasłuchuje **także w hubie** | żywy `IpNetDriver` przy hoście w hubie |
 | ściany #1 (`0x24`) i #2 (`0x430`) | próby kontrolne: bez strażnika awaria wraca |
 | dekompilator w warsztacie | `tools/dekompiluj.sh`, cztery ustalenia w pierwszej godzinie |
+| **zdarzenia wejścia docierają do klienta** (16.08) | dwa piętra liczników; klient `gra`≈2950 w oknie, w którym host ma 0; gracz potwierdził brak reakcji |
+| **wejście klienta dochodzi do `PlayerController::InputKey`** | 417 wejść do rozdzielacza, 417 dojść — 100%, jak u hosta |
+| **mapa rozdzielacza wejścia** `0x143820F10` | wszystkie ciche wyjścia powyżej `PC::InputKey` wykluczone pomiarem |
 
 ---
 

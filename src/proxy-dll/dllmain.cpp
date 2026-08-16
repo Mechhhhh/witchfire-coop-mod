@@ -4719,6 +4719,329 @@ static int readJoinDelay(int fallback)
     return (v > 0 && v <= 600) ? v : fallback;
 }
 
+// ── LICZNIK ZDARZEN WEJSCIA (marker `WFCoop_log_wejscie.txt`) ───────────────
+//
+// Pytanie, ktore blokuje grywalnosc: czy do gry KLIENTA po dolaczeniu docieraja
+// zdarzenia wejscia. Po stronie gry wykluczone jest juz wszystko — tryb wejscia,
+// wiazania, stan kontrolera (DZIENNIK, hipotezy 33 i 35) — wiec zostaje warstwa
+// DOSTARCZANIA. Mierzymy ja na DWOCH pietrach naraz, bo pojedyncze pietro nie
+// mowi, kto zgubil zdarzenie:
+//
+//   * pietro Win32 — hak na `PeekMessageW` w tablicy importow pliku gry:
+//     ile komunikatow wejscia system w ogole PODAL procesowi;
+//   * pietro gry   — hak na `0x141A020B0`, wspolnym filtrze zdarzen wejscia,
+//     przez ktory ida wszystkie trzy obslugi z tablicy metod `FViewportClient`
+//     (ADRESY.md, „punkt wejscia zdarzen") i cztery dalsze wolajace.
+//
+// Roznica miedzy pietrami jest cala odpowiedzia:
+//   Win32 = 0            -> to nie jest sprawa co-opu: okno nie dostaje nic,
+//   Win32 > 0, gra = 0   -> zdarzenia sa w procesie, gubi je Slate/widok,
+//   oba > 0              -> zdarzenia docieraja, a gra je ignoruje.
+//
+// UWAGA DO ODCZYTU — bez tego kazda liczba stad jest bezwartosciowa: nie mamy
+// DOWODU, ze filtr gry jest wolany raz na zdarzenie. Wiemy to z dekompilacji,
+// nie z pomiaru. Gdyby obsluga OSI szla co klatke z nazbieranym przesunieciem
+// myszy, licznik rosl by 60-120/s przy calkowitym bezruchu i „klient > 0" nie
+// znaczyloby nic. Dlatego licznik idzie do logu CO SEKUNDE BEZWARUNKOWO, takze
+// gdy stoi: pierwsze kilkanascie sekund, zanim ktokolwiek dotknie myszy, to
+// BAZA SPOCZYNKOWA. Plaska baza = przyrzad zdrowy. Baza rosnaca miarowo =
+// filtr jest klatkowy i caly przebieg niesie wtedy tylko pietro Win32.
+//
+// Licznik komunikatow FOKUSU jest tu z osobnego powodu. Obie instancje siedza
+// w jednym gamescope, wiec gracz podaje im wejscie NA ZMIANE, nie rownoczesnie.
+// Bez `WM_ACTIVATE`/`WM_SETFOCUS` nie odroznimy „kompozytor nie dostarczyl do
+// klienta" od „gracz nigdy nie kliknal w okno klienta" — a na tym wlasnie
+// przewrocil sie pomiar 12.08 (zasady 2 i 3).
+namespace addr {
+// Wspolny filtr zdarzen wejscia (UGameViewportClient*, FKey*, float, float).
+// Prolog: 48 89 5C 24 18 | 57 | 48 83 EC 40. Pierwsze 5 B to CALA instrukcja,
+// wiec skok wchodzi rowno, bez dopelniania NOP-ami. Sprawdzone tez, ze w te
+// 5 bajtow nie celuje zaden skok ani wywolanie (`obraz.py xref` na kazdym
+// z adresow +0..+5: same wywolania poczatku, zero trafien w srodek).
+constexpr uintptr_t InputFilter_OFF = 0x1A020B0;
+}
+
+static bool               g_logWejscie   = false;    // marker `WFCoop_log_wejscie.txt`
+static volatile unsigned* g_filtrLicznik = nullptr;  // pietro gry
+
+// Pietro Win32, kubelki osobno — objaw brzmi „ani klawisze, ani mysz, ani Esc",
+// a to trzy rozne drogi dostarczania i moga sie miedzy soba roznic.
+static volatile LONG g_msgKlawiatura = 0;
+static volatile LONG g_msgMysz       = 0;
+static volatile LONG g_msgRaw        = 0;
+static volatile LONG g_msgFokus      = 0;
+
+using PeekMessageW_t = BOOL (WINAPI*)(LPMSG, HWND, UINT, UINT, UINT);
+static PeekMessageW_t g_origPeekMessageW = nullptr;
+
+// Wolane co klatke, wiec musi byc TANIE (zasada 7): porownanie zakresu i co
+// najwyzej jeden atomowy przyrost. Zadnych alokacji, zadnego logowania.
+//
+// Wielkosci liczb nie interpretujemy: gdyby ktorys wolajacy uzyl `PM_NOREMOVE`,
+// ten sam komunikat policzylby sie wielokrotnie. Pytanie brzmi „zero czy nie
+// zero", i na to `PM_NOREMOVE` nie ma wplywu.
+static BOOL WINAPI mojPeekMessageW(LPMSG msg, HWND hwnd, UINT min_, UINT max_, UINT flagi)
+{
+    const BOOL r = g_origPeekMessageW(msg, hwnd, min_, max_, flagi);
+    if (r && msg) {
+        const UINT m = msg->message;
+        if (m >= 0x0100 && m <= 0x0109)                 // WM_KEY*/WM_CHAR/WM_SYSKEY*
+            InterlockedIncrement(&g_msgKlawiatura);
+        else if (m >= 0x0200 && m <= 0x020E)            // WM_MOUSE*/WM_MOUSEWHEEL
+            InterlockedIncrement(&g_msgMysz);
+        else if (m == 0x00FF)                           // WM_INPUT (surowe wejscie)
+            InterlockedIncrement(&g_msgRaw);
+        else if (m == 0x0006 || m == 0x0007 || m == 0x0008 || m == 0x001C)
+            InterlockedIncrement(&g_msgFokus);          // ACTIVATE/SETFOCUS/KILLFOCUS/ACTIVATEAPP
+    }
+    return r;
+}
+
+// Podmiana wpisu w tablicy importow pliku gry. Nie latamy tu ZADNEGO kodu —
+// piszemy jeden wskaznik w tablicy, ktora istnieje dokladnie po to, zeby
+// ladowarka go tam wpisala. Zasada 1 tego nie dotyczy: nie wolamy kodu gry
+// droga, ktorej gra nie uzywa, tylko przechodzimy przez wywolanie, ktore gra
+// i tak robi.
+//
+// Dopasowujemy po ADRESIE rozwiazanym z user32, nie po nazwie z
+// `OriginalFirstThunk` — przy imporcie wiazanym ten pierwszy thunk bywa zerowy
+// i wedrowka po nazwach nie znajduje niczego.
+static bool patchPeekMessageIAT(uintptr_t base)
+{
+    HMODULE u32 = GetModuleHandleW(L"user32.dll");
+    if (!u32) { logLine("WEJSCIE-LICZNIK: brak user32.dll — pietro Win32 NIE mierzone"); return false; }
+    auto cel = (PeekMessageW_t)GetProcAddress(u32, "PeekMessageW");
+    if (!cel) { logLine("WEJSCIE-LICZNIK: brak PeekMessageW — pietro Win32 NIE mierzone"); return false; }
+
+    auto* dos = (IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto* nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    const auto& kat = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (!kat.VirtualAddress || !kat.Size) {
+        logLine("WEJSCIE-LICZNIK: plik gry nie ma tablicy importow"); return false;
+    }
+
+    // Ustawiamy oryginal PRZED pierwsza podmiana — inaczej wywolanie, ktore
+    // trafi w podmieniony wpis w tej samej chwili, skoczyloby przez nullptr.
+    g_origPeekMessageW = cel;
+
+    int podmienione = 0;
+    for (auto* imp = (IMAGE_IMPORT_DESCRIPTOR*)(base + kat.VirtualAddress);
+         imp->Name; ++imp) {
+        for (auto* thunk = (IMAGE_THUNK_DATA*)(base + imp->FirstThunk);
+             thunk->u1.Function; ++thunk) {
+            if ((PeekMessageW_t)(uintptr_t)thunk->u1.Function != cel) continue;
+            DWORD stare = 0;
+            if (!VirtualProtect(&thunk->u1.Function, sizeof(ULONGLONG),
+                                PAGE_READWRITE, &stare))
+                continue;                       // strony IAT bywaja tylko do odczytu
+            thunk->u1.Function = (ULONGLONG)(uintptr_t)mojPeekMessageW;
+            VirtualProtect(&thunk->u1.Function, sizeof(ULONGLONG), stare, &stare);
+            ++podmienione;
+        }
+    }
+    if (!podmienione) {
+        logLine("WEJSCIE-LICZNIK: nie znalazlem PeekMessageW w tablicy importow "
+                "— pietro Win32 NIE mierzone");
+        g_origPeekMessageW = nullptr;
+        return false;
+    }
+    logLine("WEJSCIE-LICZNIK: pietro Win32 zalozone (%d wpis(y) IAT)", podmienione);
+    return true;
+}
+
+static bool patchInputFilterCounter(uintptr_t base)
+{
+    auto* fn = (unsigned char*)(base + addr::InputFilter_OFF);
+    static const unsigned char oczekiwane[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x18,   // mov  [rsp+0x18],rbx
+        0x57,                           // push rdi
+        0x48, 0x83, 0xEC, 0x40          // sub  rsp,0x40
+    };
+    if (memcmp(fn, oczekiwane, sizeof oczekiwane) != 0) {
+        logLine("WEJSCIE-LICZNIK: bajty pod 0x%llX inne niz oczekiwane — NIE latam",
+                (unsigned long long)(uintptr_t)fn);
+        return false;
+    }
+
+    unsigned char* tr = nullptr;
+    for (uintptr_t a = base + 0x08000000; a < base + 0x40000000; a += 0x10000) {
+        tr = (unsigned char*)VirtualAlloc((void*)a, 0x1000,
+                                          MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (tr) break;
+    }
+    if (!tr) { logLine("WEJSCIE-LICZNIK: brak miejsca na trampoline"); return false; }
+
+    //   +0x00 inc  dword [rip+0x13] -> +0x19   licznik
+    //   +0x06 mov  [rsp+0x18],rbx              oryginalne 5 B nadpisane skokiem
+    //   +0x0B jmp  qword ptr [rip+0] -> +0x11  powrot do fn+5
+    //   +0x11 <adres powrotu, 8 B>
+    //   +0x19 <licznik, 4 B>
+    //
+    // `inc` moze stac PIERWSZY, bo psuje wylacznie znaczniki procesora, a te na
+    // wejsciu do funkcji nie sa zywe (konwencja x64 nie przekazuje nimi nic).
+    // Zadnego rejestru nie ruszamy, wiec nie ma czego odkladac na stos —
+    // a to wazne, bo `mov [rsp+0x18],rbx` pisze w przestrzen cienia wolajacego
+    // i kazde `push` przed nim trafiloby w zly adres.
+    enum { OFF_POWROT = 0x11, OFF_LICZNIK = 0x19 };
+    unsigned char code[] = {
+        0xFF, 0x05, 0x13, 0x00, 0x00, 0x00,   // inc dword [rip+0x13] -> licznik
+        0x48, 0x89, 0x5C, 0x24, 0x18,         // mov [rsp+0x18],rbx   (oryginal)
+        0xFF, 0x25, 0x00, 0x00, 0x00, 0x00,   // jmp [rip+0] -> powrot
+        0,0,0,0,0,0,0,0,                      // +0x11 adres powrotu
+        0,0,0,0                               // +0x19 licznik
+    };
+    if (sizeof(code) != OFF_LICZNIK + 4) {
+        logLine("WEJSCIE-LICZNIK: BLAD WEWNETRZNY — trampolina %zu B, oczekiwano %d",
+                sizeof(code), OFF_LICZNIK + 4);
+        return false;
+    }
+    const uintptr_t powrot = base + addr::InputFilter_OFF + 5;
+    memcpy(code + OFF_POWROT, &powrot, sizeof powrot);
+    memcpy(tr, code, sizeof code);
+    g_filtrLicznik = (volatile unsigned*)(tr + OFF_LICZNIK);
+
+    DWORD stare = 0;
+    if (!VirtualProtect(fn, 5, PAGE_EXECUTE_READWRITE, &stare)) {
+        logLine("WEJSCIE-LICZNIK: VirtualProtect odmowil"); return false;
+    }
+    const int32_t rel = (int32_t)((intptr_t)tr - (intptr_t)(fn + 5));
+    fn[0] = 0xE9; memcpy(fn + 1, &rel, 4);
+    VirtualProtect(fn, 5, stare, &stare);
+    FlushInstructionCache(GetCurrentProcess(), fn, 5);
+
+    logLine("WEJSCIE-LICZNIK: pietro gry zalozone na wspolnym filtrze "
+            "(0x%llX -> trampolina 0x%llX)",
+            (unsigned long long)(uintptr_t)fn, (unsigned long long)(uintptr_t)tr);
+    return true;
+}
+
+
+// ── LICZNIKI ROZDZIELACZA WEJSCIA (marker `WFCoop_log_rozdzielacz.txt`) ─────
+//
+// Po co, skoro `log_wejscie` juz odpowiedzial: bo odpowiedzial na PYTANIE
+// POPRZEDNIE. Zdarzenia DOCIERAJA do gry klienta (WIEDZA §3j), wiec pytanie
+// przesunelo sie o pietro nizej — do `UGameViewportClient::InputKey`
+// (`0x143820F10`), ktory ma kilka wyjsc gubiacych zdarzenie BEZ ZADNEGO OBJAWU.
+//
+// Dwa liczniki, oba czysto pomiarowe (nic nie pomijaja, nic nie wolaja):
+//
+//   A. WEJSCIE do `0x143820F10`  — ile zdarzen w ogole trafilo do rozdzielacza,
+//   B. `0x143821254`             — ile z nich doszlo do `PlayerController::
+//                                  InputKey` (`call [rax+0xC18]` dwie instrukcje
+//                                  dalej; za tym punktem droga jest przesadzona).
+//
+// Jak to czytac:
+//   A > 0, B > 0   -> zdarzenie dochodzi do kontrolera; strata jest DOPIERO
+//                     w `InputKey`/`UPlayerInput` — tam nastepny hak,
+//   A > 0, B = 0   -> odcina cos wyzej: `IgnoreInput()`, brak `LocalPlayer`
+//                     albo puste `LocalPlayer+0x30`; dolozyc liczniki galezi,
+//   A = 0          -> zdarzenia nie wchodza do rozdzielacza wcale.
+//
+// A ma jeszcze DRUGIE zadanie i dlatego jest tu mimo pozornej oczywistosci:
+// domyka ATRYBUCJE pomiaru 36. `0x141A020B0` ma szesciu wolajacych, w tym
+// cztery w funkcji ODPYTUJACEJ `0x141A3D200` — wiec sam niezerowy licznik
+// filtra nie dowodzi, ze zdarzenie szlo droga widoku. Licznik A w tej samej
+// sekundzie co licznik filtra to rozstrzyga (WIEDZA §3j, „ZASTRZEZENIE").
+//
+// UWAGA przy dokladaniu galezi: `bIgnoreInput` wykluczylismy, czytajac POLE
+// `widok+0x359`, a rozdzielacz robi wywolanie WIRTUALNE `[*obiekt+0x178]`.
+// Zywy obiekt to `BPDimensionGameViewportClient_C` — podklasa, ktora moze to
+// gniazdo nadpisac. Liczyc GALAZ, nie pole.
+namespace addr {
+constexpr uintptr_t Rozdzielacz_OFF   = 0x3820F10;   // push rbp;push rbx;push rsi;push rdi
+constexpr uintptr_t DoKontrolera_OFF  = 0x3821254;   // movss xmm3,[rdi+0x2c]
+}
+
+// Wspolny zakladacz licznika przelotowego.
+//
+// Po co osobna funkcja: te trampoliny roznia sie WYLACZNIE piecioma bajtami
+// oryginalu i adresem, a kazde recznie przepisane kodowanie to okazja do
+// pomylki — pierwsza taka trampolina w tym projekcie miala trzy bledy naraz.
+// Jeden uklad, sprawdzony raz, uzyty wszedzie.
+//
+// Warunek uzycia: pod `offset` musi lezec calkowita liczba instrukcji o lacznej
+// dlugosci DOKLADNIE 5 bajtow i nic nie moze skakac w ich srodek (sprawdzac
+// `tools/obraz.py xref` na kazdym z pieciu adresow). `inc` psuje tylko
+// znaczniki procesora, wiec wolno go postawic pierwszym tylko tam, gdzie
+// znaczniki nie sa zywe — na wejsciu do funkcji zawsze, w srodku po sprawdzeniu.
+static volatile unsigned* zalozLicznikPrzelotowy(uintptr_t base, uintptr_t offset,
+                                                 const unsigned char oryginal[5],
+                                                 const char* nazwa)
+{
+    auto* fn = (unsigned char*)(base + offset);
+    if (memcmp(fn, oryginal, 5) != 0) {
+        logLine("ROZDZIELACZ: %s — bajty pod 0x%llX inne niz oczekiwane, NIE latam",
+                nazwa, (unsigned long long)(uintptr_t)fn);
+        return nullptr;
+    }
+
+    unsigned char* tr = nullptr;
+    for (uintptr_t a = base + 0x08000000; a < base + 0x40000000; a += 0x10000) {
+        tr = (unsigned char*)VirtualAlloc((void*)a, 0x1000,
+                                          MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (tr) break;
+    }
+    if (!tr) { logLine("ROZDZIELACZ: %s — brak miejsca na trampoline", nazwa); return nullptr; }
+
+    //   +0x00 inc  dword [rip+0x13] -> +0x19   licznik
+    //   +0x06 <piec bajtow oryginalu>
+    //   +0x0B jmp  qword ptr [rip+0] -> +0x11  powrot do fn+5
+    //   +0x11 <adres powrotu, 8 B>
+    //   +0x19 <licznik, 4 B>
+    enum { OFF_ORYG = 0x06, OFF_POWROT = 0x11, OFF_LICZNIK = 0x19 };
+    unsigned char code[] = {
+        0xFF, 0x05, 0x13, 0x00, 0x00, 0x00,   // inc dword [rip+0x13] -> licznik
+        0, 0, 0, 0, 0,                        // +0x06 piec bajtow oryginalu
+        0xFF, 0x25, 0x00, 0x00, 0x00, 0x00,   // jmp [rip+0] -> powrot
+        0,0,0,0,0,0,0,0,                      // +0x11 adres powrotu
+        0,0,0,0                               // +0x19 licznik
+    };
+    if (sizeof(code) != OFF_LICZNIK + 4) {
+        logLine("ROZDZIELACZ: %s — BLAD WEWNETRZNY, trampolina %zu B zamiast %d",
+                nazwa, sizeof(code), OFF_LICZNIK + 4);
+        return nullptr;
+    }
+    memcpy(code + OFF_ORYG, oryginal, 5);
+    const uintptr_t powrot = base + offset + 5;
+    memcpy(code + OFF_POWROT, &powrot, sizeof powrot);
+    memcpy(tr, code, sizeof code);
+
+    DWORD stare = 0;
+    if (!VirtualProtect(fn, 5, PAGE_EXECUTE_READWRITE, &stare)) {
+        logLine("ROZDZIELACZ: %s — VirtualProtect odmowil", nazwa);
+        return nullptr;
+    }
+    const int32_t rel = (int32_t)((intptr_t)tr - (intptr_t)(fn + 5));
+    fn[0] = 0xE9; memcpy(fn + 1, &rel, 4);
+    VirtualProtect(fn, 5, stare, &stare);
+    FlushInstructionCache(GetCurrentProcess(), fn, 5);
+
+    logLine("ROZDZIELACZ: %s — licznik zalozony (0x%llX -> trampolina 0x%llX)",
+            nazwa, (unsigned long long)(uintptr_t)fn, (unsigned long long)(uintptr_t)tr);
+    return (volatile unsigned*)(tr + OFF_LICZNIK);
+}
+
+static bool               g_logRozdzielacz = false;   // marker `WFCoop_log_rozdzielacz.txt`
+static volatile unsigned* g_rozdzWejscie   = nullptr; // A: wejscia do 0x143820F10
+static volatile unsigned* g_rozdzKontroler = nullptr; // B: dotarlo do PC::InputKey
+
+static bool patchRozdzielaczLiczniki(uintptr_t base)
+{
+    // push rbp; push rbx; push rsi; push rdi — cztery instrukcje, rowno 5 bajtow
+    static const unsigned char wejscie[5]    = { 0x40, 0x55, 0x53, 0x56, 0x57 };
+    // movss xmm3,[rdi+0x2c] — jedna instrukcja, rowno 5 bajtow
+    static const unsigned char kontroler[5]  = { 0xF3, 0x0F, 0x10, 0x5F, 0x2C };
+
+    g_rozdzWejscie   = zalozLicznikPrzelotowy(base, addr::Rozdzielacz_OFF,
+                                              wejscie, "wejscie");
+    g_rozdzKontroler = zalozLicznikPrzelotowy(base, addr::DoKontrolera_OFF,
+                                              kontroler, "do-kontrolera");
+    return g_rozdzWejscie || g_rozdzKontroler;
+}
+
+
 // ── PULS: czy proces zyje i czy swiat sie zmienil ───────────────────────────
 //
 // Po co: u klienta nie mamy UE4SS, wiec po jego stronie nie widzimy NICZEGO.
@@ -4777,6 +5100,41 @@ static DWORD WINAPI heartbeat(LPVOID)
                 logLine("SMYCZ: pominiete SetLeashName na nullu: %u", teraz);
                 ostatniS = teraz;
             }
+        }
+
+        // Liczniki zdarzen wejscia (hipoteza 36) — jedyny meldunek w tym pliku
+        // wypisywany BEZWARUNKOWO, takze gdy nic sie nie zmienilo.
+        //
+        // Nie jest to niedopatrzenie: kilkanascie pierwszych wierszy, zanim
+        // ktokolwiek dotknie myszy, to BAZA SPOCZYNKOWA. Bez niej nie wiadomo,
+        // czy filtr gry liczy zdarzenia czy klatki, a wtedy zaden pozniejszy
+        // wynik nie da sie odczytac. Cisze w logu tez trzeba widziec, bo
+        // „licznik stoi" i „hak nie stoi" wygladaja identycznie (zasada 3).
+        //
+        // Haki zakladamy tutaj, a nie w DllMain: pierwszy przebieg petli wypada
+        // dobrze po zaladowaniu wszystkich bibliotek, wiec nie zalezymy od
+        // kolejnosci ladowania. Nie potrzebuja swiata — pisza tylko po obrazie
+        // modulu — wiec nie czekamy na `w`.
+        if (g_logWejscie) {
+            static bool zalGra = false, zalWin = false;
+            if (!zalGra && g_bazaModulu) zalGra = patchInputFilterCounter(g_bazaModulu);
+            if (!zalWin && g_bazaModulu) zalWin = patchPeekMessageIAT(g_bazaModulu);
+            const unsigned gra = g_filtrLicznik ? *g_filtrLicznik : 0u;
+            logLine("WEJSCIE-LICZNIK: gra=%u | win32 klaw=%ld mysz=%ld raw=%ld fokus=%ld",
+                    gra, g_msgKlawiatura, g_msgMysz, g_msgRaw, g_msgFokus);
+        }
+
+        // Liczniki rozdzielacza (hipoteza 37). Tak samo BEZWARUNKOWO co sekunde
+        // i z tego samego powodu — bez bazy spoczynkowej nie da sie odczytac
+        // zadnej pozniejszej liczby. Wypisywane w jednej linii z licznikiem
+        // filtra byloby wygodniejsze, ale osobna linia pozwala wlaczyc te
+        // dwie latki niezaleznie.
+        if (g_logRozdzielacz) {
+            static bool zal = false;
+            if (!zal && g_bazaModulu) zal = patchRozdzielaczLiczniki(g_bazaModulu);
+            logLine("ROZDZIELACZ: wejsc=%u do-kontrolera=%u",
+                    g_rozdzWejscie   ? *g_rozdzWejscie   : 0u,
+                    g_rozdzKontroler ? *g_rozdzKontroler : 0u);
         }
 
         if (g_logOwnerWlaczony) {
@@ -5075,6 +5433,37 @@ static DWORD WINAPI worker(LPVOID)
             patchInputBindNullGuard(base);
         } else {
             logLine("WEJSCIE: brak markera WFCoop_fix_input.txt — nie latam");
+        }
+    }
+
+    // Licznik zdarzen wejscia — dwa pietra naraz (Win32 i gra). CZYSTY POMIAR:
+    // niczego w grze nie zmienia, nic nie pomija, nic nie wola. Marker ma byc
+    // po OBU stronach, bo host jest proba kontrolna — bez niego cisza u klienta
+    // nie znaczy nic (zasada 2, i to wlasnie na tym polegl pomiar 12.08).
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_log_wejscie.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_logWejscie = true;
+            logLine("WEJSCIE-LICZNIK: marker WFCoop_log_wejscie.txt — licze zdarzenia "
+                    "wejscia na pietrze Win32 i na pietrze gry");
+        } else {
+            logLine("WEJSCIE-LICZNIK: brak markera WFCoop_log_wejscie.txt — nie licze");
+        }
+    }
+
+    // Liczniki rozdzielacza wejscia (hipoteza 37). Osobny marker od
+    // `log_wejscie`, zeby dalo sie zrobic przebieg z jednym albo z drugim —
+    // i zeby zostal przebieg kontrolny, gdyby ktorys hak psul gre.
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, savedPath("WFCoop_log_rozdzielacz.txt"), "r") == 0 && f) {
+            fclose(f);
+            g_logRozdzielacz = true;
+            logLine("ROZDZIELACZ: marker WFCoop_log_rozdzielacz.txt — licze wejscia "
+                    "do UGameViewportClient::InputKey i dojscia do kontrolera");
+        } else {
+            logLine("ROZDZIELACZ: brak markera WFCoop_log_rozdzielacz.txt — nie licze");
         }
     }
 
