@@ -2779,3 +2779,53 @@ nimi była przebudowa biblioteki — bo ta wymaga zamknięcia gier.
 To jest ta sama rodzina co „nie mierz na popsutej instancji" i „pomiar po
 ponownym dołączeniu jest nieważny": stan, do którego się odwołujesz, musi
 pochodzić z TEGO przebiegu.
+
+## 3o. KOREKTA OBJAWU (16.08, po sesji) — u klienta nie działa NIC
+
+W notatce z tej sesji zawęziłem objaw do „klient nie rusza kamerą" i na tej
+podstawie zaproponowałem, żeby wziąć najpierw oś myszy. **Gracz to sprostował:
+„klient nie może robić absolutnie nic".** Wcześniejsza dokumentacja mówiła to
+poprawnie („ani WSAD, ani myszy, ani Esc") — zawężenie było moje.
+
+**To nie jest poprawka stylistyczna, tylko zmiana kierunku szukania.** Droga
+klawiszy i droga osi rozchodzą się na poziomie rozdzielacza widoku
+(`0x143820F10` kontra rozdzielacz osi) i schodzą dopiero niżej. Skoro obie są
+martwe, przyczyna jest **w części WSPÓLNEJ** — czyli w `UPlayerInput` albo
+w danych wiązań, a nie w żadnej z dwóch gałęzi z osobna. Hipoteza 39 (oś) jest
+więc **potwierdzeniem, nie skrótem**, i nie ma powodu brać jej pierwszej.
+
+### Co jeszcze wykluczono tego wieczoru (odczyty z żywych obu instancji)
+
+| trop | pomiar | werdykt |
+|---|---|---|
+| klient ma DWA kontrolery, wejście trafia do tego bez pionka | w świecie klienta jest **jeden** kontroler `DimensionPlayerController_C_2147480735`, ten sam, na który wskazuje `LocalPlayer+0x30` | martwy |
+| kontroler klienta nie trzyma pionka | `Pawn = BPDimensionPlayerCharacter_C_2147480639`, `PlayerState` ustawiony | martwy |
+| `bBlockInput` albo `InputComponent` u klienta | `bBlockInput=False`, `InputComponent` istnieje (`PC_InputComponent0`), `AutoReceiveInput=0` i `InputPriority=0` jak u hosta | martwy |
+| różnica w `UPlayerInput` | **pełne porównanie różnicowe wszystkich właściwości: ZERO różnic** między hostem a klientem | martwy |
+| różnica w `UInputComponent` | to samo — identyczne, łącznie z `CachedKeyToActionInfo` n=1 | martwy |
+
+Kontrolery różnią się **wyłącznie** tym, czym różnić się powinny między
+serwerem a klientem: `Role` 3 kontra 2, `RemoteRole` 1 kontra 3, `bReplicates`,
+`NetConnection` (u klienta `IpConnection`), kolejność w `Children`.
+
+`ControlRotation` klienta stoi na `(P=6.9, Y=102.3)` — **dokładnie tych samych
+wartościach co u poprzedniej, już zabitej instancji klienta**. To wartość
+początkowa, której nigdy nic nie ruszyło; dwa niezależne procesy dały tę samą
+liczbę, więc to nie przypadek.
+
+### Wniosek metodyczny dla następnej sesji
+
+Klient i host mają **ten sam kod** (te same tablice metod i gniazda) i **te same
+dane widoczne przez refleksję**. Różnica musi więc siedzieć w stanie, którego
+refleksja NIE widzi:
+
+* tablice wiązań w `UInputComponent` (`KeyBindings`, `ActionBindings`,
+  `AxisBindings` — zwykłe `TArray` C++, nie `UPROPERTY`),
+* tablice stanu klawiszy w `UPlayerInput`,
+* tablica `PC+0x5b8`/`+0x5c0`, po której przechodzi `0x1418C7810` (wiersz 5a
+  w §3m, wciąż niezmierzony).
+
+To jest dokładnie ten przypadek, o którym mówi zasada 10: **refleksja jest
+ślepa, rozstrzyga dekompilacja.** Zacząć od `tools/dekompiluj.sh 0x141A01390`
+i z pseudokodu odczytać, które offsety są tu istotne — a potem porównać te
+surowe bajty host kontra klient, tak jak dziś porównaliśmy właściwości.

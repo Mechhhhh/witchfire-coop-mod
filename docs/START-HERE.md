@@ -33,7 +33,9 @@ pionka; host nie dostaje duplikatu ekwipunku (`fix_dup`); klient chodzi
 (`fix_attrs`) i wyjmuje broń.
 
 **Co blokuje grywalność — jedna rzecz:** po dołączeniu **klient nie przyjmuje
-żadnego wejścia** (ani WSAD, ani myszy, ani Esc). Zmierzone: kierunek patrzenia
+żadnego wejścia** — ani WSAD, ani myszy, ani Esc. Gracz 16.08: „klient nie może
+robić absolutnie nic". Nie zawężać tego do kamery: obie drogi wejścia są martwe
+naraz, więc przyczyna jest w ich części WSPÓLNEJ. Zmierzone: kierunek patrzenia
 klienta stoi (0 zmian na 1499 próbek), gdy host w tym samym oknie ma 121 zmian.
 Przed dołączeniem to samo okno przyjmuje wejście bez zarzutu (250 próbek gry
 gracza, sprint 800, unik 1502) — więc psuje je dopiero dołączenie.
@@ -81,12 +83,15 @@ zdrowe** — pełna tabela w `KNOWLEDGE.md` §3m. Zostało jedno ogniwo.
    klawiszy, a nie w kolejnym wyłączniku.
 3. Liczniki dopiero po dekompilacji, i zawsze z wzorcem u hosta (zasada 11).
 
-**Zaraz po tym hipoteza 39 — OŚ MYSZY.** Cały dotychczasowy pomiar dotyczy
-KLAWISZY: `0x143820F10` to `InputKey`. Oś ma własny rozdzielacz
-(`UGameViewportClient::InputAxis`, wołany z `0x141A00FD0` tak samo jak `InputKey`
-z `0x141A01190`) i **nigdy go nie mierzyliśmy**. Objaw „klient nie rusza
-kamerą" formalnie należy do tamtej drogi, więc para liczników na niej to
-najtańsze rozszerzenie, jakie zostało.
+**Gdzie NIE szukać.** Refleksja jest tu ślepa i już to sprawdzono: `PlayerInput`
+klienta i hosta mają **zero różnic** we wszystkich właściwościach, `InputComponent`
+też, kontroler ma pionka i jeden jest tylko jeden. Różnica siedzi w stanie
+nieodbijanym — tablicach wiązań `UInputComponent` i stanie klawiszy
+`UPlayerInput` (`KNOWLEDGE.md` §3o).
+
+**Hipoteza 39 (oś myszy) jest POTWIERDZENIEM, nie skrótem.** U klienta nie
+działa NIC — ani klawisze, ani mysz, ani Esc — a obie drogi rozchodzą się
+dopiero na rozdzielaczach, więc przyczyna jest w części wspólnej.
 
 **Gotowe do użycia:** marker `log_rozdzielacz` i `tools/wejscie-liczniki.py`
 (przyrosty na sekundę, obie strony w jednym szeregu, cięcie po wyzerowaniu
