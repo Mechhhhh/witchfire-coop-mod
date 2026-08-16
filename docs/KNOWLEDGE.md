@@ -3065,3 +3065,132 @@ niego trafia po każdej stronie. Zero u klienta przy niezerowym u hosta domknie
 sprawę. Punkt zaczepienia: `UInputComponent` kontrolera u klienta ma tę samą
 liczbę wiązań co u hosta (12 z 24 pojemności, §3o), więc problem nie jest
 w samych wiązaniach, tylko w tym, że komponent nie trafia na stos.
+
+## 3u. `GameplayEnabled = False` na pionku klienta — najmocniejszy trop
+
+Po ustaleniu, że wiązanie ruchu u klienta **nie jest wołane ani razu** (§3t),
+zostało pytanie: czemu. Pełne porównanie różnicowe **pionków** (`ue-props.py`,
+host kontra klient, obie instancje w tym samym świecie) dało jedną różnicę
+nazwaną wprost:
+
+```
++0x173C  Bool  GameplayEnabled  =  True    (host)
++0x173C  Bool  GameplayEnabled  =  False   (klient)
+```
+
+Stabilne w ośmiu próbkach po obu stronach.
+
+To jest **zmienna blueprintowa** klasy `BPDimensionPlayerCharacter_C`, a nie
+pole silnika. Jeśli graf blueprintu bramkuje nią obsługę osi — bardzo typowy
+wzorzec „InputAxis → Branch(GameplayEnabled) → ruch" — to natywna funkcja
+`0x14187DFC0` nigdy nie zostanie wywołana, co zgadza się z pomiarem co do joty
+i tłumaczy, czemu martwe jest **wszystko naraz**: klawisze, mysz i Esc idą przez
+ten sam graf.
+
+### Rodzina objawów obok, z tego samego korzenia
+
+Ten sam diff pokazał, że pionek klienta ma **puste** rzeczy, które u hosta są
+pełne:
+
+| pole | host | klient |
+|---|---|---|
+| `CharacterSoundData.SoundData` | 148 pozycji | **puste** |
+| `CharacterSoundData.Sounds` | 150 pozycji | **puste** |
+| `SkillsMontageSet.Montages` | 52 pozycje | **puste** |
+| `UnarmedMontageSet.Montages` | 52 pozycje | **puste** |
+| `NetTag` | 94014 | 0 |
+
+To nie są cztery osobne usterki, tylko jeden wzorzec: **postać klienta nie
+przeszła pełnej ścieżki inicjalizacji**, która u hosta zapełnia te zestawy
+i ustawia `GameplayEnabled`. Warto to sprawdzić jako całość, a nie po kawałku.
+
+Zgodne z tym jest też ustalenie o komponencie wejścia pionka: u hosta ma
+zbudowaną mapę `CachedKeyToActionInfo` (`+0x120`, 1 pozycja) i dwie dalsze
+tablice, u klienta **żadnej z nich**, a lista pod `+0x110` ma 48 pozycji
+zamiast 59.
+
+### Jak to potwierdzić — podstawienie jako DOWÓD, nie naprawa
+
+Zasada 5 mówi wprost: podstawienie wartości jest **dowodem przyczyny**, a nie
+naprawą. Tu jest tanie i odwracalne — zapis jednego bajta z zewnątrz, bez
+wołania kodu gry:
+
+```
+pionek + 0x173C = 1     (na instancji KLIENTA)
+```
+
+Jeśli po tym klient zacznie się ruszać, przyczyna jest potwierdzona, a
+prawdziwą naprawą będzie znalezienie i odblokowanie tego, co u klienta nie
+ustawia `GameplayEnabled` — nie trzymanie bajta na siłę.
+
+### WYNIK PODSTAWIENIA: NEGATYWNY — to nie jest bramka
+
+Bajt zapisany z zewnątrz (`pionek+0x173C = 1`), gra go **nie nadpisała**
+(20 próbek po sekundzie, stale 1). Liczniki ruchu u klienta mimo to **stoją
+na zerze**, przy hoście bijącym 178 razy na sekundę w tej samej chwili
+(`wejscieA` 243970 → 244148 w 1 s, `za-progiem` 2056).
+
+To rozstrzyga bez udziału gracza, bo licznik wejścia jest **klatkowy**:
+gdyby wiązanie zaczęło dispatchować, rosłby sam z siebie, bez żadnego
+naciskania. Nie rośnie.
+
+**Wniosek: `GameplayEnabled` nie bramkuje wiązania — jest kolejnym OBJAWEM
+tego samego korzenia** (niedokończona inicjalizacja postaci klienta), obok
+pustych `CharacterSoundData`, `SkillsMontageSet` i `UnarmedMontageSet`.
+Wiązanie nie odpala w ogóle, a nie „odpala i zostaje zablokowane" — więc trop
+stosu wejścia (hipoteza 41) zostaje żywy i jest teraz jedynym.
+
+Bajt przywrócony do zera po pomiarze, żeby stan instancji nie mylił
+następnych odczytów.
+
+## 3w. ZNALEZIONE — `GlobalInputEnabled = 0` u klienta (flaga instancji gry)
+
+Pierwsza różnica **nazwana i na poziomie gry**, która tłumaczy objaw w całości.
+
+| | host | klient |
+|---|---|---|
+| `GameInstance + 0x2A0` | **1** | **0** |
+
+Skąd offset: `DimensionGameInstance::IsGlobalInputEnabled` (UFunction, `Native,
+BlueprintCallable`) to przejściówka `0x141BED210`, która woła getter
+`0x1418785C0` — a ten jest ośmiobajtowy i mówi wszystko:
+
+```
+0x1418785C0  movzx eax, byte ptr [rcx + 0x2a0]
+0x1418785C7  ret
+```
+
+Setter: `DimensionGameInstance::SetGlobalInputEnabled` (`0x141BEEAC0` →
+`0x1418953E0`), też `BlueprintCallable`.
+
+**Dlaczego to pasuje do objawu lepiej niż wszystko dotychczas.** Flaga jest
+globalna dla instancji gry, więc jej wyłączenie gasi wejście w CAŁEJ grze naraz
+— klawisze, mysz i Esc — dokładnie tak, jak zgłasza gracz („klient nie może
+robić absolutnie nic"). Żadna z wcześniejszych różnic nie miała tego zasięgu.
+
+Flaga ma własny łańcuch powiadomień: `OnGlobalInputEnabledValueChanged`
+istnieje osobno na `DimensionPlayerCharacter` (`0x141C58330`) i na
+`DimensionWeapon` (`0x141CD74B0`). To znaczy, że przy zmianie flagi obiekty
+**reagują** — i tłumaczy, czemu `GameplayEnabled` na pionku klienta jest
+`False` (§3u): jest ustawiane właśnie przez to powiadomienie.
+
+### Podstawienie surowe: NIEROZSTRZYGAJĄCE, i wiadomo dlaczego
+
+Zapis `GameInstance+0x2A0 = 1` z zewnątrz **nie odblokował ruchu** (liczniki
+dalej zero przez 8 s). To nie jest wynik negatywny: zapis bajta nie odtwarza
+powiadomień, które poszły w dół, gdy flaga szła na zero. Skutki już nastąpiły
+i trzymają się same.
+
+**Właściwy test to wywołanie `SetGlobalInputEnabled(true)`** — funkcji
+`BlueprintCallable`, czyli drogą, której gra sama używa (zasada 1 spełniona).
+To jest zadanie na następną przebudowę, nie na zapis z zewnątrz.
+
+Bajt przywrócony do zera po pomiarze.
+
+### Co sprawdzić przy okazji tego samego przebiegu
+
+1. **Kiedy flaga idzie na zero u klienta** — hak na setterze `0x1418953E0`
+   z logowaniem wartości i stosu. Jeśli spada przy travelu i nigdy nie wraca,
+   mamy pełny obraz.
+2. Czy u hosta też spada przy ładowaniu mapy i wraca — to da wzorzec
+   poprawnego przebiegu (zasada 11).

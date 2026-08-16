@@ -64,7 +64,30 @@ zdarzenie.
 
 ---
 
-## NASTĘPNY KROK — stos wejścia kontrolera (hipoteza 41)
+## NASTĘPNY KROK — globalna flaga wejścia (hipoteza 42)
+
+**Zmierzone:** `GameInstance + 0x2A0` (`GlobalInputEnabled`) to **1 u hosta
+i 0 u klienta**. Flaga jest globalna dla instancji gry, więc gasi wejście
+w całej grze naraz — klawisze, mysz i Esc — i jako jedyna dotąd ma zasięg
+zgodny z objawem (`KNOWLEDGE.md` §3w).
+
+**Przepis:**
+
+1. Hak logujący na setterze **`0x1418953E0`** (`SetGlobalInputEnabled`),
+   z wartością i licznikiem, po OBU stronach. Ma pokazać, **kiedy** flaga
+   spada u klienta i czy u hosta spada i wraca przy ładowaniu mapy.
+2. Dopiero mając to — próba wywołania `SetGlobalInputEnabled(true)` na
+   kliencie. To `BlueprintCallable`, czyli droga, której gra sama używa
+   (zasada 1 spełniona). **Nie zapisem bajta**: flaga ma łańcuch powiadomień
+   (`OnGlobalInputEnabledValueChanged` osobno na postaci i na broni), więc
+   surowy zapis niczego nie odtwarza — sprawdzone.
+
+**Adresy gotowe:** getter `0x1418785C0` (`movzx eax,[rcx+0x2a0]; ret`),
+przejściówki UFunction `0x141BED210` / `0x141BEEAC0`.
+
+---
+
+## Trop poboczny — stos wejścia kontrolera (hipoteza 41)
 
 **Zmierzone 16.08:** u klienta funkcja obsługi ruchu `0x14187DFC0` nie jest
 wołana **ani razu**, gdy u hosta bije ~200 razy na sekundę — obie instancje
