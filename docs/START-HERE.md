@@ -235,6 +235,8 @@ nazwy plików na angielskie i przepisuje odsyłacze.
 | podawanie wejścia z zewnątrz przez gamescope | **nie da się**; kursor gry nie idzie za pozycją systemową, a kliknięcia nie docierają. Menu klika gracz |
 | testy bez gamescope | gra pauzuje się przy utracie fokusu i psuje klienta — pomiar jest bezwartościowy |
 | pomiar po PONOWNYM dołączeniu | host ma wtedy zaparkowany wątek gry; sprawdź tiki, zanim cokolwiek odczytasz |
+| **uruchamianie obu gier naraz** | gracz traci mysz — kursor ucieka między oknami zamiast zostać w tym, w którym gra. Klienta uruchamiać DOPIERO, gdy host jest w hubie |
+| **czujnik czytający ogon `WFCoopProxy.log`** | log jest dopisywany MIĘDZY SESJAMI, więc ogon zawiera wpisy z poprzedniego przebiegu. 16.08 taki czujnik odpalił klienta w tej samej sekundzie co hosta. Liczyć linie przy uzbrajaniu i patrzeć tylko na nowsze |
 | pułapka sprzętowa w trakcie dołączania | łamie sekwencję otwierania kanałów; wolno tylko hak w procesie |
 | **kolejne liczniki na `0x141A020B0`** | zmierzone i zamknięte: zdarzenia DOCIERAJĄ. To test progu, nie rozdzielacz |
 | **strażnik NULLA w pętli rozgłaszania** | gra ma tam własny; awaria to zwisający słuchacz (`rax=2`), nie null |
