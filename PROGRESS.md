@@ -1,7 +1,7 @@
 # Dziennik postępu — mod co-op do Witchfire
 
 Witchfire (UE 4.27) to gra dla jednego gracza; mod to proxy DLL wołająca kod
-sieciowy, który w grze już jest. Stan na 11 sierpnia 2026, wieczorem. W tabeli
+sieciowy, który w grze już jest. Stan na 17 sierpnia 2026, po sesji nocnej. W tabeli
 tylko rzeczy potwierdzone pomiarem — obalone też, bo obalenie zawęża pole.
 
 | data | co ustalono | dowód |
@@ -61,7 +61,7 @@ odłożony do czasu, aż klient będzie grał.
 # EN — Progress log: Witchfire co-op mod
 
 Witchfire (UE 4.27) is a single-player game; the mod is a proxy DLL calling
-networking code the game already contains. State as of 11 August 2026, evening.
+networking code the game already contains. State as of 17 August 2026, after the night session.
 Only measured facts below — disproved ones too, since disproving narrows the field.
 
 | date | finding | evidence |
