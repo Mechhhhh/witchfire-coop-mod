@@ -185,7 +185,8 @@ Drugi kontroler z `Role = 3` (autorytet) po stronie klienta to pozostałość po
 jego własnej grze jednoosobowej — warto sprawdzić, czy nie przeszkadza.
 
 **Czego to NIE tłumaczy:** dlaczego host przy dołączeniu wypada do menu bez
-myszy i wraca do hubu sam. To osobny objaw, zgłoszony przez gracza 12.08.
+myszy i wraca do hubu sam. To osobny objaw, zgłoszony przez gracza 12.08 —
+opis kanoniczny i stan sprawy: `KNOWLEDGE.md` §3y.
 
 **Hak jest napisany i czeka w kodzie** (`patchObjecieLog`, marker
 `log_objecie`): podgląda obie połowy uścisku — `ClientRestart` po stronie

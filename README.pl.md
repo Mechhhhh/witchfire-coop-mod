@@ -9,10 +9,10 @@ Działa na Linuksie przez Protona. Na Windowsie też — sam mod to zwykły
 windowsowy DLL, tylko skrypty uruchamiające są linuksowe.
 
 **Stan: nieskończone i szczerze mówiąc daleko do końca.** Dwie osoby grają razem
-ponad dwie godziny bez awarii. Dwa z czterech znanych problemów są naprawione i
-potwierdzone powtórzonymi przebiegami. Dwa dalej są otwarte — w jednym przyczyna
-jest rozpracowana do końca, ale naprawa nie działa. Przeczytaj „Co nie działa",
-zanim spróbujesz.
+ponad dwie godziny bez awarii, a dołączający klient przeżywa teraz w hubie —
+ma kamerę, świat i pełne objęcie pionka. **Grywalność blokuje jedna rzecz:
+dołączony klient nie przyjmuje żadnego wejścia** — ani klawiszy ruchu, ani
+myszy, ani klawisza menu. Przeczytaj „Co nie działa", zanim spróbujesz.
 
 ---
 
@@ -41,11 +41,32 @@ Każde twierdzenie niżej zostało zmierzone, nie założone.
  przypadek sieciowy w Unrealu, a wyprawy i tak nie dało się razem *skończyć*:
  powrót do hubu to lokalne ładowanie mapy, które rozrywa sesję. Nowy cel:
  spotkanie w hubie i wspólna podróż.
-- **Dołączenie w hubie jeszcze nie przeżywa.** Klient ginął kilka sekund po
- travelu — zdarzenie Blueprintu z timera odpalało się na obiekcie zniszczonym
- przez travel. Strażnik nulla jest wdrożony i w testach. Po zerwaniu
- połączenia host ~50 s później parkuje wątek gry na zamku, choć obraz dalej
- się rysuje.
+- **Dołączony klient nie przyjmuje wejścia — to jest bloker.** Nie sama
+ kamera: ani klawisze, ani mysz, ani Esc. Droga dostarczania jest sprawna
+ i to jest zmierzone, nie założone. Zdarzenia docierają do procesu, do
+ własnego filtra wejścia gry, do rozdzielacza widoku i do kontrolera postaci —
+ to ostatnie w stu procentach prób, dokładnie jak u hosta, przy hoście
+ mierzonym jako próba kontrolna w tych samych sekundach. Ginie to, co jest
+ niżej: wiązanie ruchu nie zostaje wywołane ani razu, podczas gdy u hosta
+ chodzi co klatkę.
+
+ Znane są dwie osobne przyczyny. Pierwsza jest naprawiona: gra gasi globalne
+ wejście na czas ładowania mapy i sama je przywraca, a klient robił tylko
+ pierwsze. Łatka woła własny setter gry, żeby je przełączyć, i wiązanie ruchu
+ zaczyna wtedy dispatchować — zmierzone, od zera do pełnej klatki. To nie
+ wystarcza. Po podróży klienta do hosta wiązanie znów zamiera przy zapalonej
+ fladze, więc druga przyczyna pozostaje nieustalona. Bieżący trop to komponent
+ wejścia pionka, który u klienta ma mniej wiązań niż u hosta i nigdy nie buduje
+ swojej mapy klawiszy.
+- **Dołączenie w hubie przeżywa.** Klient ginął kilka sekund po travelu —
+ zdarzenie Blueprintu z timera odpalało się na obiekcie zniszczonym przez
+ travel. Strażnik nulla trzyma: 453 s połączenia zamiast śmierci po 64 s. Po
+ zerwaniu połączenia host ~50 s później dalej parkuje wątek gry na zamku, choć
+ obraz się rysuje.
+- **Host wypada do menu głównego przy przeładowaniu mapy.** Po wznowieniu wraca
+ w to samo miejsce i klient widzi go tam, gdzie był, więc dla stanu świata
+ skutków nie widać — ale kosztuje to jedno ręczne wznowienie na przebieg.
+ Wyzwalacz nieustalony.
 - **Sprint i ślizg szarpią; magazynek klienta zostaje pusty.** Odłożone do
  czasu przebudowy przepływu sesji — mogą być skutkami tego, że sekwencja
  startu misji nigdy nie rusza dla drugiego gracza.
@@ -97,7 +118,7 @@ Repozytorium nie zawiera żadnych zasobów gry ani treści niewydanej — tylko 
 źródłowy, narzędzia i notatki powstałe w tym projekcie. Jedyny wyjątek to kilka
 krótkich ciągów bajtów kodu maszynowego zacytowanych z gry w
 `src/proxy-dll/dllmain.cpp`; są technicznie niezbędne, żeby sprawdzić i założyć
-łatki, **nie** są objęte licencją MIT tego projektu, a plik mówi o tym w każdym
+łatki, **nie** są objęte licencją Apache 2.0 tego projektu, a plik mówi o tym w każdym
 miejscu, gdzie występują.
 
 To nie jest oficjalny tryb sieciowy i nigdy nim nie będzie. Projekt nie jest

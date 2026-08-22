@@ -2039,7 +2039,7 @@ Naprawa: strażnik nulla na `0x141B7DDA0`, marker `fix_smycz`, licznik pominię�
 | sygnatura `17fc181f` ZLEPIA różne odczyty nulla — rozróżniać ramkami z `read-crash-xml.py`, nie sygnaturą | 16:10 padał w `0x141B59EAD` (efekty strzału), 03:18/03:25/14:41 w `0x141B7DDAA` (`SetLeashName`) — jedna sygnatura |
 | `PULS` proxy bije po śmierci GameThreadu — „zyje" w logu dowodzi życia wątku DLL, nie gry | klient po awarii: PULS co 5 s, proces ~6 tik/s, okno zamrożone na ostatniej klatce |
 | awaria z zawieszoną obsługą wyjątku wygląda jak zamrożenie także od strony nakładki | mangohud stanął na 14:41:15 (4 FPS ostatniej próbki), zrzut w `Crashes` już leżał |
-| host przy powstaniu połączenia WYPADA DO MENU, ale sesja to przeżywa | zrzut gracza 14:41:21 (menu), po CONTINUE wrócił do hubu 14:41:55; netdriver ten sam, licznik trzymał 1 aż do timeoutu |
+| host przy powstaniu połączenia WYPADA DO MENU, ale sesja to przeżywa | zrzut gracza 14:41:21 (menu), po CONTINUE wrócił do hubu 14:41:55; netdriver ten sam, licznik trzymał 1 aż do timeoutu. **Opis kanoniczny i stan sprawy: §3y** |
 | sterownika sieciowego NIE ma przed CONTINUE — powstaje dopiero po wejściu w hub | skan GObjects w menu: tylko klasy i `Default__`; po CONTINUE żywa instancja `IpNetDriver` |
 | host paruje wątek gry ~50 s PO zerwaniu połączenia (hipoteza 32) — objaw inny niż zamrożenie przy dołączaniu | 14:43:14: `futex_wait` bez limitu (`0x7f08d4565144`, `val 0x80`), wątek gry 0 tik/s przy renderze 241 FPS; takt = pierwszy 30-s cykl napełniania po „bez Player"; na hoście sieroty: 4 bronie, kontroler bez pionka. Gracz: „to się zawsze działo" |
 | po zerwaniu host dalej OBSŁUGUJE zombie klienta | `NAPELNIANIE #29` dla kontrolera klienta 23 s po zamknięciu połączenia, już jako „bez Player" |
@@ -3259,18 +3259,42 @@ spełniona). **Nie zapisem bajta**: sprawdzone, surowy zapis nie odtwarza
 powiadomień i nie odblokowuje ruchu (§3w).
 
 
-## 3y. Obserwacja gracza (17.08): host wraca do MENU, gdy klient dołącza
+## 3y. Host wraca do MENU przy przeładowaniu mapy (znane od 09.08)
 
-Gracz zgłosił coś, czego dotąd nigdzie nie zapisaliśmy, a co tłumaczy część
-kosztu każdego przebiegu:
+**Rodowód:** zapisane po raz pierwszy 09.08 (`historia/SCENARIOS.md`,
+`historia/STAN.md`), **potwierdzone pomiarem 12.08** — `KNOWLEDGE.md:2042`,
+wiersz „host przy powstaniu połączenia WYPADA DO MENU, ale sesja to przeżywa",
+ze zrzutem gracza 14:41:21 (menu) i powrotem do hubu 14:41:55 — oraz
+zaparkowane jako osobny objaw w `OVERVIEW.md` słowami „zgłoszony przez gracza
+12.08". Przypomniane przez gracza 17.08.
+
+**To jest sekcja kanoniczna dla tego zjawiska. NIE zapisywać go po raz kolejny
+jako nowego** — pierwotnie właśnie to zrobiono i stąd ta poprawka.
+
+Gracz przypomniał je tak:
 
 > „hostowi odpala się menu główne, jak mu mapę przeładowuje, ale wątpię że to
 > coś zmienia, bo po continue pojawia się w tym samym miejscu i klient, jak
 > dołączy, widzi go tam, gdzie był przed menu"
 
-Czyli **dołączenie klienta przeładowuje mapę u HOSTA i wyrzuca go do menu
-głównego.** Po `CONTINUE` host wraca w to samo miejsce, a klient widzi go tam,
-gdzie był — więc dla stanu świata skutków nie widać.
+Zjawisko: **przeładowanie mapy u HOSTA wyrzuca go do menu głównego.** Po
+`CONTINUE` host wraca w to samo miejsce, a klient widzi go tam, gdzie był —
+więc dla POZYCJI hosta skutków nie widać. Dla stanu jego postaci patrz §3c
+(host traci ręce i broń przy każdym dołączeniu).
+
+**WYZWALACZ NIEUSTALONY — i nie wolno tu wpisać „dołączenie klienta".** Ze
+zdania gracza to nie wynika: mówi, że po `CONTINUE` klient dopiero dołącza
+i widzi go na miejscu, więc dołączenie nie może być tym, co wyrzuciło hosta
+z gry. Kandydaci, żaden niezmierzony:
+
+1. własne `openLevel(..., "listen?bIsLanMatch")` moda, wykonywane **zanim**
+   gracz kliknie CONTINUE,
+2. przeładowanie mapy przy powstaniu połączenia (to opisuje wiersz 2042),
+3. utrata fokusu okna / alt-tab — tak tłumaczono to 09.08.
+
+**Uwaga na źródło zamieszania:** 09.08 słowa „menu" i „pauza" były używane
+zamiennie i dwa zapisy z tego dnia biegną w przeciwnych kierunkach
+przyczynowości. Cytując je, cytować z tą uwagą.
 
 **Dlaczego mimo to warto to mieć zapisane:**
 
@@ -3325,7 +3349,8 @@ wspólnego z żadną z tych dwóch flag. Bajt przywrócony.
 
 Wraca **hipoteza 41**, odłożona wcześniej: pionek klienta po travelu powstaje
 przez replikację, a jego komponent wejścia ma **48 wiązań zamiast 59** i nie ma
-zbudowanej mapy `CachedKeyToActionInfo` (§3o). Najprostsze wytłumaczenie zgodne
+zbudowanej mapy `CachedKeyToActionInfo` (§3u — komponent **PIONKA**; komponent
+KONTROLERA jest identyczny z hostem i to mówi §3o, nie mylić tych dwóch). Najprostsze wytłumaczenie zgodne
 ze wszystkim: `SetupPlayerInputComponent` na replikowanym pionku klienta nie
 rejestruje wiązań osi.
 

@@ -9,9 +9,10 @@ Runs on Linux through Proton. Works on Windows too — the mod itself is a plain
 Windows DLL; only the launch scripts are Linux-specific.
 
 **Status: not finished, and honestly not close.** Two players can play together
-for over two hours without a crash. Two of four known problems are fixed and
-confirmed by repeated runs. Two are still open — one of them has its cause fully
-traced but no working fix. Read "What does not work" before you try it.
+for over two hours without a crash, and a joining client now survives in the
+hub with camera, world and a fully acknowledged pawn. **One thing blocks
+playability: the joined client accepts no input at all** — no movement keys, no
+mouse, no menu key. Read "What does not work" before you try it.
 
 ---
 
@@ -39,10 +40,33 @@ Every claim below was measured, not assumed.
  networking case Unreal has, and an expedition can never be *finished*
  together: the return to the hub is a local map load that tears the session
  apart. The new target is meeting in the hub and travelling together.
-- **Joining in the hub does not survive yet.** The client used to die seconds
- after travel — a Blueprint timer event fired on an object destroyed by the
- travel. A null guard is deployed and under test. After a drop, the host's
- game thread parks on a lock ~50 s later while the render keeps drawing.
+- **The joined client accepts no input — this is the blocker.** Not the camera
+ only: no keys, no mouse, no menu key. The delivery path is healthy and that is
+ measured, not assumed. Input events reach the process, reach the game's own
+ input filter, reach the viewport dispatcher and reach the player controller —
+ the last of those at a hundred percent of attempts, matching the host exactly,
+ with the host measured as a control in the same seconds. What dies is further
+ down: the movement binding is never invoked once, while on the host it runs
+ every frame.
+
+ Two separate causes are known so far. The first is fixed: the game turns
+ global input off while a map loads and back on afterwards, and the client only
+ ever did the first half. A patch calls the game's own script-callable setter to
+ toggle it back, and the movement binding then starts dispatching — measured,
+ from zero to full frame rate. It is not enough. After the client travels to the
+ host the binding stops again with that flag on, so a second cause remains
+ unidentified. The current lead is the pawn's input component, which carries
+ fewer bindings on the client than on the host and never builds its cached key
+ map.
+- **Joining in the hub survives now.** The client used to die seconds after
+ travel — a Blueprint timer event fired on an object destroyed by the travel.
+ A null guard holds: 453 s of connection instead of death at 64 s. After a drop,
+ the host's game thread still parks on a lock ~50 s later while the render keeps
+ drawing.
+- **The host is dropped to the main menu when its map reloads.** After resuming
+ it returns to the same place and the client sees it where it was, so world
+ state appears unaffected — but it costs a manual resume once per run. The
+ trigger is not established.
 - **Sprinting and sliding stutter; the client's magazine stays empty.** Both
  parked while the session flow is rebuilt — they may be symptoms of the
  mission-start sequence never running for the second player.
@@ -94,7 +118,7 @@ This repository contains no game assets and no unreleased content — only sourc
 code, tools and notes written for this project. The single exception is a handful
 of short machine-code byte sequences quoted from the game in
 `src/proxy-dll/dllmain.cpp`; they are technically required to check and install
-the patches, they are **not** covered by this project's MIT licence, and the file
+the patches, they are **not** covered by this project's Apache 2.0 licence, and the file
 says so at every place they appear.
 
 This is not an official multiplayer mode and never will be one. It is not

@@ -1279,7 +1279,7 @@ static bool patchInputBindNullGuard(uintptr_t base)
 // do pawna jeszcze nie jest rozwiazana. Dla jedynego gracza taka sytuacja nie
 // zachodzi nigdy, wiec autorzy sprawdzili tylko jedno z dwoch uzyc.
 //
-// To trzecie wystapienie wzorca opisanego w WIEDZA.md §4 — i znow naprawiamy je
+// To trzecie wystapienie wzorca opisanego w KNOWLEDGE.md §4 — i znow naprawiamy je
 // tak samo: wychodzimy DOKLADNIE ta droga, ktorej gra uzywa przy wlasnym
 // sprawdzeniu dwie instrukcje nizej (`je 0x141B59F35`). Skutkiem ubocznym jest
 // brak smugi po pocisku cudzej broni w jednej klatce — czyli mniej, niz gra
@@ -1641,7 +1641,7 @@ static bool patchKanalPomiar(uintptr_t base)
 
 // ── KANAL STANU RUCHU: klient mowi serwerowi, co nacisnal ───────────────────
 //
-// PROBLEM, zmierzony (WIEDZA.md §3b): serwerowa kopia postaci klienta siedzi
+// PROBLEM, zmierzony (KNOWLEDGE.md §3b): serwerowa kopia postaci klienta siedzi
 // w `Idle` przez caly czas, gdy klient przechodzi u siebie przez `Walking`,
 // `Running`, `Sliding`, `Airborne`. Przez to serwer liczy mu zwykla predkosc
 // (615) albo kucanie (265) zamiast sprintu i slizgu (800) — i sciaga gracza
@@ -3055,7 +3055,7 @@ static void kanalTick(uintptr_t base)
 // `CurrentAmmoInClip = 0` przy zapasie 90. Bron ma przy tym KOMPLET pieciu
 // zdolnosci (z `AbilityWeaponLoadAmmo_C`), wiec „brak zdolnosci" odpada.
 //
-// Dwa tropy juz zamkniete na zrzucie obrazu (WIEDZA.md §3d):
+// Dwa tropy juz zamkniete na zrzucie obrazu (KNOWLEDGE.md §3d):
 //   - `0x141B242F0` to ZACISK, nie napelnianie: zapisuje
 //     `min(CurrentAmmo, min(CurrentAmmoInClip, ClipSize))`, wiec przy zerze
 //     wpisuje z powrotem zero,
@@ -3366,7 +3366,7 @@ static bool patchAmmoLog(uintptr_t base)
 //   0x1436D0BAE  Velocity = 0.00            ; przycieta do limitu = 0
 //
 // Czyli DWA nadpisania gry zwracaja ZERO dla pionka, ktory na serwerze nie jest
-// sterowany lokalnie. To czwarte wystapienie wzorca z WIEDZA.md §4.
+// sterowany lokalnie. To czwarte wystapienie wzorca z KNOWLEDGE.md §4.
 //
 // Probka kontrolna, ktora to rozstrzygnela: host przechodzi przez DOKLADNIE te
 // same instrukcje, tylko u niego predkosc po przycieciu zostaje (20.44 -> 20.44),
@@ -3990,7 +3990,7 @@ static bool patchRemoteMovement(uintptr_t base)
 // Dlaczego hak w procesie, a nie pulapka sprzetowa: pulapka na `SetOwner`
 // zatrzymuje watek gry przy KAZDYM wywolaniu. Sprobowalem — 400 zatrzyman
 // w trakcie dolaczania zamrozilo hosta i wywrocilo gre (awaria `fc5c66e3`,
-// zapisana w PRZEBIEGI.md jako artefakt pomiaru). Hak zapisuje do logu i wraca,
+// zapisana w RUNS.md jako artefakt pomiaru). Hak zapisuje do logu i wraca,
 // wiec nie zatrzymuje niczego.
 //
 // `SetOwner` jest wirtualne (gniazdo 139 — ustalone z deasemblacji przejsciowki
@@ -4190,7 +4190,7 @@ static bool patchSetOwnerLog(uintptr_t base)
 // wiec zwykla przejsciowka `__fastcall` o dwoch argumentach jest bezpieczna.
 //
 // Hak LOGUJE PIERWSZE WYWOLANIE, zeby cisza znaczyla „zjawisko nie zaszlo",
-// a nie „hak siedzi w zlej tablicy" (zasada 14 z START-TUTAJ.md).
+// a nie „hak siedzi w zlej tablicy" (zasada 14 z START-HERE.md).
 namespace addr {
 constexpr int SLOT_STORAGE_LOAD = 99;      // offset 0x318
 constexpr uintptr_t PC_PLAYER_OFF = 0x298; // APlayerController::Player
@@ -4257,7 +4257,7 @@ static void __fastcall thunkStorageLoad(void* magazyn, unsigned char flaga)
     // swoim wlasnym wczytaniu i nikt go nie wyrejestrowal. Host dostaje przez to
     // drugi komplet broni, dwa duplikaty zdolnosci i amunicje 28231.
     //
-    // To jest wzorzec z WIEDZA.md §4 w wersji „za duzo, nie za malo": kod pisany
+    // To jest wzorzec z KNOWLEDGE.md §4 w wersji „za duzo, nie za malo": kod pisany
     // dla jednego gracza traktuje wczytanie jako zdarzenie CALEJ GRY, a nie
     // jednego gracza.
     //
@@ -4738,7 +4738,7 @@ static int readJoinDelay(int fallback)
 //     ile komunikatow wejscia system w ogole PODAL procesowi;
 //   * pietro gry   — hak na `0x141A020B0`, wspolnym filtrze zdarzen wejscia,
 //     przez ktory ida wszystkie trzy obslugi z tablicy metod `FViewportClient`
-//     (ADRESY.md, „punkt wejscia zdarzen") i cztery dalsze wolajace.
+//     (ADDRESSES.md, „punkt wejscia zdarzen") i cztery dalsze wolajace.
 //
 // Roznica miedzy pietrami jest cala odpowiedzia:
 //   Win32 = 0            -> to nie jest sprawa co-opu: okno nie dostaje nic,
