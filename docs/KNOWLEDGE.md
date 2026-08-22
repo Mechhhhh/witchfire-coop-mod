@@ -3362,3 +3362,64 @@ w tym projekcie liczba pozycji już raz myliła pół dnia.
 Nie wolno napisać, że „globalna flaga nie była przyczyną". Była — i jest, dla
 fazy przed dołączeniem, potwierdzona pomiarem z licznikiem ruszającym z zera.
 Objaw ma **dwie przyczyny naraz** i obie trzeba usunąć. `fix_globalne` zostaje.
+
+## 3ź. POTWIERDZONE (17.08) — komponent wejścia PIONKA klienta nie jest przetwarzany
+
+**Rodowód:** hipoteza 41, otwarta 16.08 na podstawie samej liczby wpisów
+(48 kontra 59, §3u); tu potwierdzona **niezależnym świadkiem** i z próbą
+kontrolną w tym samym przebiegu.
+
+Cztery komponenty wejścia, obie instancje w tym samym świecie, jeden odczyt:
+
+| | wiązań (`+0x110`) | `CachedKeyToActionInfo` (`+0x120`) |
+|---|---|---|
+| HOST kontroler | 12/24 | **1/4** |
+| HOST pionek | 59/102 | **1/4** |
+| KLIENT kontroler | 12/24 | **1/4** |
+| **KLIENT pionek** | **48/56** | **0/0** |
+
+`CachedKeyToActionInfo` to mapa budowana **dopiero w chwili, gdy komponent jest
+przetwarzany**. Trzy z czterech ją mają. Nie ma jej wyłącznie komponent PIONKA
+u klienta.
+
+**Dlaczego to jest mocniejsze niż liczba 48/59.** Sama różnica liczby wpisów
+nie rozstrzygała, czy komponent jest pomijany, czy tylko ma mniej wiązań —
+i dlatego 16.08 odłożono ten trop. Pusta mapa rozstrzyga w drugą stronę: gdyby
+komponent był przetwarzany, mapa **powstałaby** niezależnie od tego, ile ma
+wiązań. Do tego komponent KONTROLERA u klienta mapę **ma**, więc nie chodzi
+o to, że u klienta przetwarzanie wejścia w ogóle nie chodzi. Chodzi o ten jeden
+komponent.
+
+Liczby 48/59, dotąd bez surowego źródła (§3z), są tym odczytem **potwierdzone**.
+
+### Co jeszcze zmierzono w tym samym przebiegu
+
+**Refleksja widzi DOKŁADNIE JEDNĄ różnicę** między komponentami wejścia pionków:
+`CachedKeyToActionInfo`. Wszystkie pozostałe właściwości są identyczne.
+
+**Trop nienazwany:** `pionek + 0x5B`, bit `0x10` — zapalony u klienta, zgaszony
+u hosta, stabilnie w dwóch niezależnych przebiegach i na różnych egzemplarzach
+pionka. Cztery bool-e, które refleksja pod tym bajtem nazywa
+(`bActorSeamlessTraveled`, `bReplicates`, `bCanBeInCluster`,
+`bAllowReceiveTickEventOnDedicatedServer`), mają po obu stronach **te same**
+wartości — czyli ten bit jest **nieodbijany**, prywatny. Nie wiadomo, co znaczy;
+zapisane, żeby nie szukać go po raz drugi od zera.
+
+### Czego NIE udało się zrobić — żeby nie próbować drugi raz
+
+Próba dopasowania wpisów wiązań **między procesami** po liczbie porządkowej
+z `+0x08` struktury: **nie działa**. Na komponencie pionka to pole jest wszędzie
+zerem. Porównanie pozycyjne też odpada — element `[0]` hosta i klienta mają
+zagnieżdżone wskaźniki pod **różnymi** offsetami (`+0x10`/`+0x18` u hosta,
+`+0x30`/`+0x38` u klienta), więc to nie są te same wpisy w tej samej kolejności.
+Narzędzie `tools/wiazania.py` zostaje, bo poprawnie czyta liczby i mapę, ale
+jego część od tożsamości jest **nieużyteczna** i tak jest w nim opisana.
+
+### Następny krok
+
+Pytanie zawęziło się do jednego: **dlaczego ten komponent nie trafia do
+przetwarzania.** W UE4 komponent pionka wchodzi na stos wejścia warunkowo —
+i to jest miejsce do ohakowania. Wszystkie pola pionka, które o tym decydują
+i które widzi refleksja (`bBlockInput`, `AutoReceiveInput`, `InputPriority`,
+`InputComponent`, `Controller`, `Owner`), są po obu stronach **identyczne**
+(§3o), więc warunku trzeba szukać w kodzie, nie w danych.

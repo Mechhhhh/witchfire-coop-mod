@@ -109,7 +109,36 @@ setter `0x1418953E0`, przejściówki UFunction `0x141BED210` / `0x141BEEAC0`.
 
 ---
 
-## NASTĘPNY KROK — komponent wejścia PIONKA (hipoteza 41)
+## NASTĘPNY KROK — warunek wstawiania komponentu na stos (hipoteza 44)
+
+**Hipoteza 41 POTWIERDZONA 17.08** i to zawęża pytanie do jednego zdania.
+Cztery komponenty wejścia, obie instancje w tym samym świecie:
+
+| | wiązań | `CachedKeyToActionInfo` |
+|---|---|---|
+| HOST kontroler | 12/24 | 1/4 |
+| HOST pionek | 59/102 | 1/4 |
+| KLIENT kontroler | 12/24 | 1/4 |
+| **KLIENT pionek** | **48/56** | **0/0** |
+
+Ta mapa powstaje dopiero przy przetwarzaniu komponentu. Trzy z czterech ją
+mają. Komponent KONTROLERA klienta ją **ma** — więc przetwarzanie wejścia
+u klienta żyje; pomijany jest ten jeden komponent (`KNOWLEDGE.md` §3ź).
+
+**Pytanie brzmi teraz: dlaczego jest pomijany.** Wszystkie pola pionka, które
+o tym decydują i które widzi refleksja — `bBlockInput`, `AutoReceiveInput`,
+`InputPriority`, `InputComponent`, `Controller`, `Owner` — są po obu stronach
+**identyczne**. Warunku trzeba więc szukać w kodzie, nie w danych: znaleźć
+miejsce wstawiania komponentu pionka na stos i policzyć obie gałęzie po obu
+stronach.
+
+**Nienazwany trop na potem:** `pionek + 0x5B` bit `0x10` — zapalony u klienta,
+zgaszony u hosta, stabilny w dwóch przebiegach, **nieodbijany** (bool-e, które
+refleksja tam nazywa, są po obu stronach takie same).
+
+---
+
+## Poprzedni krok (zrobiony) — komponent wejścia PIONKA (hipoteza 41)
 
 **Uwaga na podmiot, bo to już raz pomyliło:** chodzi o komponent wejścia
 **PIONKA**, nie kontrolera. Komponent KONTROLERA jest u klienta **identyczny**

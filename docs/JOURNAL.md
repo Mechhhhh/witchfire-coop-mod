@@ -14,13 +14,14 @@ Ten plik ma zostać krótki.
 
 | # | hipoteza | przewidywanie | pomiar — NASTĘPNY KROK | werdykt |
 |---|---|---|---|---|
-| 41 | **komponent wejścia PIONKA klienta nie jest tym samym co u hosta** — 48 wiązań zamiast 59 i brak zbudowanej mapy `CachedKeyToActionInfo` (§3u). Komponent KONTROLERA jest identyczny z hostem (12/24, §3o) — **nie mylić tych dwóch** | jeśli brakuje wiązań osi, to `SetupPlayerInputComponent` na replikowanym pionku klienta ich nie rejestruje | porównać **ZAWARTOŚĆ** wiązań host↔klient, nie liczbę pozycji (§3z). Liczby 48/59 mają na razie jedno źródło i brak surowego odczytu — najpierw je potwierdzić | — |
+| 44 | **komponent wejścia pionka klienta nie trafia na stos wejścia z powodu WARUNKU W KODZIE, nie różnicy w danych** — wszystkie pola pionka, które o tym decydują i które widzi refleksja, są po obu stronach identyczne (§3o) | hak na warunku pokaże u hosta wstawienie komponentu pionka co klatkę, a u klienta pominięcie | znaleźć miejsce, w którym komponent pionka jest wstawiany albo pomijany, i policzyć obie gałęzie po OBU stronach. Wzorzec z hosta | — |
+| ~~41~~ | ~~komponent wejścia PIONKA klienta nie jest tym samym co u hosta~~ — **POTWIERDZONA, §3ź** — 48 wiązań zamiast 59 i brak zbudowanej mapy `CachedKeyToActionInfo` (§3u). Komponent KONTROLERA jest identyczny z hostem (12/24, §3o) — **nie mylić tych dwóch** | jeśli brakuje wiązań osi, to `SetupPlayerInputComponent` na replikowanym pionku klienta ich nie rejestruje | porównać **ZAWARTOŚĆ** wiązań host↔klient, nie liczbę pozycji (§3z). Liczby 48/59 mają na razie jedno źródło i brak surowego odczytu — najpierw je potwierdzić | — |
 | 32 | **awaria hosta na wiszącym słuchaczu i park wątku gry to JEDNO zjawisko** — pętla rozgłaszania trzyma zamek (`+0x360`) przez cały przebieg listy, więc awaria w środku zostawia zamek wzięty i reszta gry staje na `futex_wait` | jeśli tak, poprawny strażnik przed wywołaniem usuwa oba objawy naraz | **zmiana planu 16.08:** przepisywać nie ma czego — pseudokod potwierdził mechanizm zamka, a audyt bajt po bajcie pokazał, że kodowanie `fix_lista` jest **poprawne** (`KNOWLEDGE.md` §3k). Próba kontrolna h.28 zdjęła `fix_lista` i `fix_ekwipunek` **naraz**, więc nie wiadomo, który zamrażał. Przebieg z włączonym **tylko** `fix_lista` — sam marker, bez przebudowy | zamek POTWIERDZONY pseudokodem; park POTWIERDZONY pomiarem (0 tików/3 s, `futex_wait`) |
 | 29 | wyprawy nie da się przejść razem, bo powrót do hubu nie jest podróżą sesji | po zamianie lokalnego ładowania mapy na `ServerTravel` obaj gracze przenoszą się razem, a skrypty misji ruszają po stronie serwera | **trop znaleziony:** komenda `SERVERTRAVEL` idzie przez gniazdo **`+0x440`** w tablicy metod `UWorld`. Na żywym hoście odczytać ten wpis i zdekompilować — dopiero potem projektować łatkę | — |
 | 30 | magazynek klienta, niesterowana maszyna stanów i brak potwierdzenia objęcia są **skutkami** 29, a nie osobnymi usterkami | po naprawie startu misji część z nich znika bez osobnej łatki | mierzyć dopiero PO 41 i 29 (**nie** po 36 — obalona) | — |
 | 31b | strażnik `fix_smycz` jest przyczyną przeżycia klienta, a nie zbiegiem okoliczności | po ZDJĘCIU markera awaria wraca z tym samym stosem (`SetLeashName`, `0x141B7DDAA`) | jeden przebieg z markerem zdjętym — tani, robić przy okazji innego | — |
 
-**Kolejność: 41 → 32 → 29 → 30.** Bez wejścia u klienta co-op jest niegrywalny,
+**Kolejność: 44 → 32 → 29 → 30.** Bez wejścia u klienta co-op jest niegrywalny,
 a 41 to jedyna żywa hipoteza po tym, jak §3z pokazał, że globalna flaga była
 **jedną z dwóch** przyczyn, nie jedyną. 32 jest zaraz po niej i argument jest
 teraz MOCNIEJSZY, nie słabszy: host pada po ~50 min, a przebiegi przy 41 będą
@@ -30,6 +31,8 @@ długie. 29 to kamień milowy, ale ma sens dopiero, gdy klient gra.
 
 | co | werdykt |
 |---|---|
+| **hipoteza 41 — komponent wejścia pionka** | **POTWIERDZONA 17.08 z próbą kontrolną.** `CachedKeyToActionInfo` mają trzy komponenty z czterech; nie ma jej wyłącznie komponent PIONKA u klienta. Komponent KONTROLERA klienta ją MA, więc przetwarzanie wejścia u klienta żyje. Liczby 48/59 potwierdzone surowym odczytem. `KNOWLEDGE.md` §3ź |
+| dopasowywanie wpisów wiązań między procesami po polu `+0x08` | **nie działa**: na komponencie pionka to pole jest wszędzie zerem, a porównanie pozycyjne odpada (zagnieżdżone wskaźniki pod różnymi offsetami) |
 | **host wraca do MENU przy przeładowaniu mapy** | **ZNANE OD 09.08, zgłaszane przez gracza wielokrotnie — NIE zapisywać jako nowe.** Stąd podwójne `CONTINUE` w każdym przebiegu i dodatkowa para wyłącz/włącz w liczniku `GLOBALNE` u hosta. Wyzwalacz NIEUSTALONY. Opis kanoniczny: `KNOWLEDGE.md` §3y |
 | **hipoteza 43 — `SetGlobalInputEnabled(true)` przywróci wejście** | **POTWIERDZONA CZĘŚCIOWO.** Łatka `fix_globalne` przełącza flagę i licznik wiązania ruchu rusza z zera **przed** dołączeniem; po travelu zamiera mimo `flaga=1` i podstawionego `GameplayEnabled=1`. Łatka ZOSTAJE, ale nie wystarcza. `KNOWLEDGE.md` §3z |
 | **hipoteza 39 — oś myszy** | wyprowadzona z „w toku" jako **potwierdzenie, nie skrót** — nie ma powodu brać jej pierwszej (§3o). Wróci, gdy 41 będzie rozstrzygnięta |
